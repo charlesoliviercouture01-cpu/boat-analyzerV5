@@ -7,11 +7,14 @@ app = Flask(__name__)
 
 # ================= CONFIG =================
 CFG = {
-    "tps_range": (90, 105),
-    "lambda_range": (0.80, 0.92),
-    "fuel_range": (317, 372),
-    "ambient_offset": 15,
-    "cheat_delay_sec": 0.5
+    "tps_min": 90,
+    "tps_max": 105,
+    "lambda_min": 0.75,
+    "lambda_max": 1.05,
+    "fuel_min": 40,
+    "fuel_max": 60,
+    "temp_offset": 20,
+    "cheat_delay": 0.5
 }
 
 UPLOAD_DIR = "/tmp"
@@ -26,32 +29,38 @@ HTML = """
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
-
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <img src="{{ url_for('static', filename='precision_logo.png') }}" style="height:120px;">
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <img src="{{ url_for('static', filename='precision_logo.png') }}" style="height:100px;">
   <h1 class="text-center flex-grow-1">{{ etat_global }}</h1>
-  <img src="{{ url_for('static', filename='image_copy.png') }}" style="height:120px;">
+  <img src="{{ url_for('static', filename='image_copy.png') }}" style="height:100px;">
 </div>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
-<div class="row mb-2">
-  <div class="col"><input class="form-control" type="date" name="date_test"></div>
-  <div class="col"><input class="form-control" type="time" name="heure_session"></div>
-  <div class="col"><input class="form-control" name="num_embarcation" placeholder="Numéro embarcation"></div>
+<div class="row mb-3">
+  <div class="col-md-4">
+    <input class="form-control" name="location" placeholder="Emplacement" required>
+  </div>
+  <div class="col-md-4">
+    <input class="form-control" type="date" name="race_date" required>
+  </div>
+  <div class="col-md-4">
+    <input class="form-control" type="time" name="race_time" required>
+  </div>
 </div>
 
-<div class="row mb-2">
+<div class="row mb-3">
   <div class="col-md-4">
-    <input class="form-control" type="number" step="0.1" name="ambient_temp"
+    <input class="form-control" type="number" step="0.1"
+           name="ambient_temp"
            placeholder="Température ambiante (°C)" required>
   </div>
 </div>
 
-<input class="form-control mb-2" type="file" name="file" required>
+<input class="form-control mb-3" type="file" name="file" required>
 <button class="btn btn-primary">Analyser</button>
 
 </form>
@@ -67,67 +76,94 @@ HTML = """
 </html>
 """
 
+# ================= CSV LINK =================
+def load_link_csv(file):
+    raw = pd.read_csv(file, header=None)
+    header = raw.iloc[19]
+    df = raw.iloc[22:].copy()
+    df.columns = header
+    return df.reset_index(drop=True)
+
 # ================= ANALYSE =================
 def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
 
-    # Lambda combinée
-    df["Lambda"] = df[["Lambda 1", "Lambda 2", "Lambda 3", "Lambda 4"]].mean(axis=1)
+    # Conversion numérique
+    df["Time"] = pd.to_numeric(df["Section Time"], errors="coerce")
+    df["TPS"] = pd.to_numeric(df["TPS (Main)"], errors="coerce")
+    df["AFR"] = pd.to_numeric(df["Lambda 1"], errors="coerce")
+    df["Fuel"] = pd.to_numeric(df["Fuel Pressure"], errors="coerce")
+    df["ECT"] = pd.to_numeric(df["ECT"], errors="coerce")
 
-    # Checks
-    df["TPS_OK"] = df["TPS (%)"].between(*CFG["tps_range"])
-    df["Lambda_OK"] = df["Lambda"].between(*CFG["lambda_range"])
-    df["Fuel_OK"] = df["Fuel Pressure (psi)"].between(*CFG["fuel_range"])
-    df["IAT_OK"] = df["IAT (°C)"] <= ambient_temp + CFG["ambient_offset"]
-    df["ECT_OK"] = df["ECT (°C)"] <= ambient_temp + CFG["ambient_offset"]
+    # Nettoyage strict
+    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel", "ECT"])
+    df = df[df["Time"].diff().fillna(0) >= 0]
 
-    df["OUT_RAW"] = ~(df["TPS_OK"] & df["Lambda_OK"] & df["Fuel_OK"] & df["IAT_OK"] & df["ECT_OK"])
+    # AFR → Lambda
+    df["Lambda"] = df["AFR"] / 14.7
 
-    # ⏱ délai anti spot lean / riche
-    df["dt"] = df["Time (s)"].diff().fillna(0)
+    # Détection OUT (conditions simultanées)
+    df["OUT"] = (
+        (~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])) &
+        (~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])) &
+        (~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"]))
+    )
 
-    cum = 0.0
-    debut = []
+    # Delta temps
+    df["dt"] = df["Time"].diff().fillna(0)
 
-    for out, dt in zip(df["OUT_RAW"], df["dt"]):
-        if out:
-            cum += dt
-            debut.append(cum >= CFG["cheat_delay_sec"])
+    cumul = 0.0
+    cheat_detected = False
+    cheat_time = None
+
+    for t, out, dt in zip(df["Time"], df["OUT"], df["dt"]):
+        if bool(out):
+            cumul += dt
+            if cumul >= CFG["cheat_delay"]:
+                cheat_detected = True
+                cheat_time = t
+                break
         else:
-            cum = 0
-            debut.append(False)
+            cumul = 0.0
 
-    df["Début_triche"] = debut
-    df["QUALIFIÉ"] = ~df["OUT_RAW"].rolling(2).max().fillna(0).astype(bool)
-
-    return df
+    return df, cheat_detected, cheat_time
 
 # ================= ROUTES =================
 @app.route("/")
 def index():
-    return render_template_string(HTML, table=None, download=None, etat_global="Boat Data Analyzer")
+    return render_template_string(
+        HTML,
+        table=None,
+        download=None,
+        etat_global="Boat Data Analyzer"
+    )
 
 @app.route("/upload", methods=["POST"])
 def upload():
     file = request.files["file"]
-    ambient_temp = float(request.form["ambient_temp"])
+    ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
 
-    df = pd.read_csv(file)
-    df = analyze_dataframe(df, ambient_temp)
+    location = request.form["location"]
+    race_date = request.form["race_date"]
+    race_time = request.form["race_time"]
 
-    cheat_time = None
-    rows = df[df["Début_triche"]]
-    if not rows.empty:
-        cheat_time = rows["Time (s)"].iloc[0]
+    df = load_link_csv(file)
+    df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
 
-    etat = "PASS" if cheat_time is None else f"CHEAT – Début à {cheat_time:.2f} s"
+    if cheat:
+        etat = f"CHEAT – Début à {cheat_time:.2f} s"
+    else:
+        etat = f"PASS | {location} | {race_date} {race_time}"
 
     fname = f"result_{datetime.now().timestamp()}.csv"
     path = os.path.join(UPLOAD_DIR, fname)
     df.to_csv(path, index=False)
 
-    table = df.head(100).to_html(classes="table table-dark table-striped", index=False)
+    table = df.head(100).to_html(
+        classes="table table-dark table-striped",
+        index=False
+    )
 
     return render_template_string(
         HTML,
@@ -138,9 +174,13 @@ def upload():
 
 @app.route("/download")
 def download():
-    fname = request.args.get("fname")
-    return send_file(os.path.join(UPLOAD_DIR, fname), as_attachment=True)
+    return send_file(
+        os.path.join(UPLOAD_DIR, request.args["fname"]),
+        as_attachment=True
+    )
 
+# ================= RENDER ENTRYPOINT =================
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 

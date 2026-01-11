@@ -29,12 +29,14 @@ HTML = """
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
+
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<div class="d-flex align-items-center justify-content-between mb-4">
+<!-- HEADER FIXE -->
+<div class="d-flex align-items-center justify-content-between mb-5">
   <img src="{{ url_for('static', filename='precision_logo.png') }}" style="height:100px;">
-  <h1 class="text-center flex-grow-1">{{ etat_global }}</h1>
+  <h1 class="text-center flex-grow-1">Boat Data Analyzer</h1>
   <img src="{{ url_for('static', filename='image_copy.png') }}" style="height:100px;">
 </div>
 
@@ -52,7 +54,7 @@ HTML = """
   </div>
 </div>
 
-<div class="row mb-3">
+<div class="row mb-4">
   <div class="col-md-4">
     <input class="form-control" type="number" step="0.1"
            name="ambient_temp"
@@ -66,9 +68,22 @@ HTML = """
 </form>
 
 {% if table %}
-<hr>
-<a class="btn btn-success" href="{{ download }}">Télécharger CSV</a>
-<div class="table-responsive mt-3">{{ table|safe }}</div>
+<hr class="my-5">
+
+<!-- RESULTAT EN BAS -->
+<h2 class="text-center mb-4 text-success">
+  {{ etat_global }}
+</h2>
+
+<div class="d-flex justify-content-center mb-4">
+  <a class="btn btn-success btn-lg" href="{{ download }}">
+    Télécharger CSV
+  </a>
+</div>
+
+<div class="table-responsive mb-5">
+  {{ table|safe }}
+</div>
 {% endif %}
 
 </div>
@@ -76,43 +91,33 @@ HTML = """
 </html>
 """
 
-# ================= CSV LINK (ULTRA ROBUSTE) =================
+# ================= CSV ROBUSTE =================
 def load_link_csv(file):
     raw = pd.read_csv(
         file,
-        sep=None,
-        engine="python",
         header=None,
-        encoding_errors="ignore",
-        on_bad_lines="skip"   # ← FIX ERREUR "expected X fields"
+        sep=",",
+        engine="python",
+        on_bad_lines="skip"
     )
 
-    header_row = None
-    for i in range(len(raw)):
-        row = raw.iloc[i].astype(str).str.lower()
-        if any("time" in cell for cell in row):
-            header_row = i
-            break
-
-    if header_row is None:
-        raise ValueError("Impossible de détecter l'entête du fichier CSV")
-
-    df = raw.iloc[header_row + 1:].copy()
-    df.columns = raw.iloc[header_row]
+    header = raw.iloc[19]
+    df = raw.iloc[22:].copy()
+    df.columns = header
     return df.reset_index(drop=True)
 
-# ================= ANALYSE =================
-def analyze_dataframe(df, ambient_temp):
+# ================= ANALYSE ROBUSTE =================
+def analyze_dataframe(df):
 
     df = df.copy()
 
-    df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
-    df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
-    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
-    df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
-    df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
+    df["Time"] = pd.to_numeric(df["Section Time"], errors="coerce")
+    df["TPS"] = pd.to_numeric(df["TPS (Main)"], errors="coerce")
+    df["AFR"] = pd.to_numeric(df["Lambda 1"], errors="coerce")
+    df["Fuel"] = pd.to_numeric(df["Fuel Pressure"], errors="coerce")
+    df["ECT"] = pd.to_numeric(df["ECT"], errors="coerce")
 
-    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel"])
+    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel", "ECT"])
     df = df[df["Time"].diff().fillna(0) >= 0]
 
     df["Lambda"] = df["AFR"] / 14.7
@@ -148,25 +153,19 @@ def index():
         HTML,
         table=None,
         download=None,
-        etat_global="Boat Data Analyzer"
+        etat_global=""
     )
 
 @app.route("/upload", methods=["POST"])
 def upload():
     file = request.files["file"]
 
-    ambient_temp = float(
-        request.form["ambient_temp"]
-        .replace(",", ".")
-        .strip()
-    )
-
     location = request.form["location"]
     race_date = request.form["race_date"]
     race_time = request.form["race_time"]
 
     df = load_link_csv(file)
-    df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
+    df, cheat, cheat_time = analyze_dataframe(df)
 
     if cheat:
         etat = f"CHEAT – Début à {cheat_time:.2f} s"
@@ -196,14 +195,8 @@ def download():
         as_attachment=True
     )
 
-# ================= ERREUR RENDER =================
-@app.errorhandler(Exception)
-def handle_error(e):
-    return f"<h1>Erreur interne</h1><pre>{str(e)}</pre>", 500
-
-# ================= RENDER ENTRYPOINT =================
+# ================= RENDER =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
 

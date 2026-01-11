@@ -76,12 +76,28 @@ HTML = """
 </html>
 """
 
-# ================= CSV LINK =================
+# ================= CSV LINK (RENDER SAFE) =================
 def load_link_csv(file):
-    raw = pd.read_csv(file, header=None)
-    header = raw.iloc[19]
-    df = raw.iloc[22:].copy()
-    df.columns = header
+    raw = pd.read_csv(
+        file,
+        sep=None,
+        engine="python",
+        header=None,
+        encoding_errors="ignore"
+    )
+
+    header_row = None
+    for i in range(len(raw)):
+        row = raw.iloc[i].astype(str).str.lower()
+        if any("time" in cell for cell in row):
+            header_row = i
+            break
+
+    if header_row is None:
+        raise ValueError("Entête non détectée dans le fichier CSV")
+
+    df = raw.iloc[header_row + 1:].copy()
+    df.columns = raw.iloc[header_row]
     return df.reset_index(drop=True)
 
 # ================= ANALYSE =================
@@ -89,28 +105,23 @@ def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
 
-    # Conversion numérique
-    df["Time"] = pd.to_numeric(df["Section Time"], errors="coerce")
-    df["TPS"] = pd.to_numeric(df["TPS (Main)"], errors="coerce")
-    df["AFR"] = pd.to_numeric(df["Lambda 1"], errors="coerce")
-    df["Fuel"] = pd.to_numeric(df["Fuel Pressure"], errors="coerce")
-    df["ECT"] = pd.to_numeric(df["ECT"], errors="coerce")
+    df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
+    df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
+    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
+    df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
+    df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    # Nettoyage strict
-    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel", "ECT"])
+    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel"])
     df = df[df["Time"].diff().fillna(0) >= 0]
 
-    # AFR → Lambda
     df["Lambda"] = df["AFR"] / 14.7
 
-    # Détection OUT (conditions simultanées)
     df["OUT"] = (
         (~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])) &
         (~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])) &
         (~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"]))
     )
 
-    # Delta temps
     df["dt"] = df["Time"].diff().fillna(0)
 
     cumul = 0.0
@@ -142,7 +153,12 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
     file = request.files["file"]
-    ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
+
+    ambient_temp = float(
+        request.form["ambient_temp"]
+        .replace(",", ".")
+        .strip()
+    )
 
     location = request.form["location"]
     race_date = request.form["race_date"]
@@ -179,8 +195,14 @@ def download():
         as_attachment=True
     )
 
+# ================= ERREUR RENDER =================
+@app.errorhandler(Exception)
+def handle_error(e):
+    return f"<h1>Erreur interne</h1><pre>{str(e)}</pre>", 500
+
 # ================= RENDER ENTRYPOINT =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 

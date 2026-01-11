@@ -76,14 +76,15 @@ HTML = """
 </html>
 """
 
-# ================= CSV LINK (RENDER SAFE) =================
+# ================= CSV LINK (ULTRA ROBUSTE) =================
 def load_link_csv(file):
     raw = pd.read_csv(
         file,
         sep=None,
         engine="python",
         header=None,
-        encoding_errors="ignore"
+        encoding_errors="ignore",
+        on_bad_lines="skip"   # ← FIX ERREUR "expected X fields"
     )
 
     header_row = None
@@ -94,7 +95,7 @@ def load_link_csv(file):
             break
 
     if header_row is None:
-        raise ValueError("Entête non détectée dans le fichier CSV")
+        raise ValueError("Impossible de détecter l'entête du fichier CSV")
 
     df = raw.iloc[header_row + 1:].copy()
     df.columns = raw.iloc[header_row]

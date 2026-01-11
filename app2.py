@@ -1,3 +1,8 @@
+
+Gab Couture
+14:05 (il y a 5 minutes)
+À moi
+
 from flask import Flask, request, render_template_string, send_file, url_for
 import pandas as pd
 import os
@@ -40,13 +45,10 @@ HTML = """
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
-<div class="row mb-3">
-  <div class="col-md-4"><input class="form-control" name="location" placeholder="Emplacement" required></div>
-  <div class="col-md-4"><input class="form-control" type="date" name="race_date" required></div>
-  <div class="col-md-4"><input class="form-control" type="time" name="race_time" required></div>
-</div>
-
 <div class="row mb-4">
+  <div class="col-md-4">
+    <input class="form-control" name="location" placeholder="Emplacement" required>
+  </div>
   <div class="col-md-4">
     <input class="form-control" type="number" step="0.1"
            name="ambient_temp"
@@ -59,8 +61,8 @@ HTML = """
 </form>
 
 {% if message %}
-<hr class="my-5">
-<h3 class="text-center text-danger">{{ message }}</h3>
+<hr class="my-4">
+<div class="alert alert-warning text-center">{{ message }}</div>
 {% endif %}
 
 {% if table %}
@@ -81,22 +83,32 @@ HTML = """
 </html>
 """
 
-# ================= CSV ROBUSTE =================
+# ================= CSV ULTRA ROBUSTE =================
 def load_csv_robuste(file):
-    raw = pd.read_csv(file, engine="python", sep=",", on_bad_lines="skip")
+    raw = pd.read_csv(
+        file,
+        engine="python",
+        sep=",",
+        on_bad_lines="skip"
+    )
 
     header_row = None
-    for i in range(min(40, len(raw))):
-        row = raw.iloc[i].astype(str).str.lower()
-        if "section time" in " ".join(row):
+    for i in range(min(50, len(raw))):
+        joined = " ".join(raw.iloc[i].astype(str).str.lower())
+        if "section" in joined and "time" in joined:
             header_row = i
             break
 
     if header_row is None:
-        raise ValueError("En-tête du fichier non détecté")
+        raise ValueError("Impossible de détecter l’en-tête du fichier")
 
     df = raw.iloc[header_row + 1:].copy()
     df.columns = raw.iloc[header_row]
+    df = df.dropna(how="all")
+
+    if df.empty:
+        raise ValueError("Aucune donnée exploitable après l’en-tête")
+
     return df.reset_index(drop=True)
 
 # ================= ANALYSE CALIBRÉE =================
@@ -104,9 +116,9 @@ def analyze_dataframe(df, ambient_temp):
 
     def find_col(keys):
         for c in df.columns:
-            for k in keys:
-                if k in c.lower():
-                    return c
+            cl = c.lower()
+            if any(k in cl for k in keys):
+                return c
         return None
 
     cols = {
@@ -117,17 +129,18 @@ def analyze_dataframe(df, ambient_temp):
         "ECT": find_col(["ect"])
     }
 
-    if None in cols.values():
-        raise ValueError("Colonnes essentielles manquantes")
+    missing = [k for k, v in cols.items() if v is None]
+    if missing:
+        raise ValueError(f"Colonnes manquantes : {', '.join(missing)}")
 
-    df["Time"] = pd.to_numeric(df[cols["Time"]], errors="coerce")
-    df["TPS"] = pd.to_numeric(df[cols["TPS"]], errors="coerce")
-    df["AFR"] = pd.to_numeric(df[cols["AFR"]], errors="coerce")
-    df["Fuel"] = pd.to_numeric(df[cols["Fuel"]], errors="coerce")
-    df["ECT"] = pd.to_numeric(df[cols["ECT"]], errors="coerce")
+    for k, c in cols.items():
+        df[k] = pd.to_numeric(df[c], errors="coerce")
 
     df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel"])
     df = df[df["Time"].diff().fillna(0) >= 0]
+
+    if df.empty:
+        raise ValueError("Aucune donnée valide après nettoyage")
 
     df["Lambda"] = df["AFR"] / 14.7
 
@@ -136,7 +149,6 @@ def analyze_dataframe(df, ambient_temp):
     fuel_bad = ~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"])
     ect_ok = df["ECT"] <= ambient_temp + CFG["temp_offset"]
 
-    # 🔥 LOGIQUE CHEAT PROPRE
     df["OUT"] = tps_bad & lambda_bad & fuel_bad & ect_ok
 
     df["dt"] = df["Time"].diff().fillna(0)
@@ -162,10 +174,7 @@ def upload():
     try:
         file = request.files["file"]
         ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
-
         location = request.form["location"]
-        race_date = request.form["race_date"]
-        race_time = request.form["race_time"]
 
         df = load_csv_robuste(file)
         df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
@@ -173,7 +182,7 @@ def upload():
         etat = (
             f"CHEAT – Début à {cheat_time:.2f} s"
             if cheat else
-            f"PASS | {location} | {race_date} {race_time}"
+            f"PASS | {location}"
         )
 
         fname = f"result_{datetime.now().timestamp()}.csv"
@@ -195,13 +204,17 @@ def upload():
     except Exception as e:
         return render_template_string(
             HTML,
-            message=f"Erreur d'analyse : {str(e)}"
+            message=f"Erreur d’analyse : {str(e)}"
         )
 
 @app.route("/download")
 def download():
-    return send_file(os.path.join(UPLOAD_DIR, request.args["fname"]), as_attachment=True)
+    return send_file(
+        os.path.join(UPLOAD_DIR, request.args["fname"]),
+        as_attachment=True
+    )
 
+# ================= RENDER =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

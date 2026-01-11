@@ -13,7 +13,7 @@ CFG = {
     "lambda_max": 1.05,
     "fuel_min": 40,
     "fuel_max": 60,
-    "temp_offset": 20,     # 🔥 OFFSET TEMPÉRATURE
+    "temp_offset": 20,
     "cheat_delay": 0.5
 }
 
@@ -81,14 +81,9 @@ HTML = """
 </html>
 """
 
-# ================= CSV ULTRA ROBUSTE =================
+# ================= CSV ROBUSTE =================
 def load_csv_robuste(file):
-    raw = pd.read_csv(
-        file,
-        sep=",",
-        engine="python",
-        on_bad_lines="skip"
-    )
+    raw = pd.read_csv(file, engine="python", sep=",", on_bad_lines="skip")
 
     header_row = None
     for i in range(min(40, len(raw))):
@@ -98,22 +93,14 @@ def load_csv_robuste(file):
             break
 
     if header_row is None:
-        raise ValueError("Impossible de détecter l'en-tête du fichier")
+        raise ValueError("En-tête du fichier non détecté")
 
-    df = raw.iloc[header_row+1:].copy()
+    df = raw.iloc[header_row + 1:].copy()
     df.columns = raw.iloc[header_row]
     return df.reset_index(drop=True)
 
-# ================= ANALYSE ROBUSTE + TEMP =================
+# ================= ANALYSE CALIBRÉE =================
 def analyze_dataframe(df, ambient_temp):
-
-    col_map = {
-        "Time": ["section time", "time"],
-        "TPS": ["tps"],
-        "AFR": ["lambda"],
-        "Fuel": ["fuel"],
-        "ECT": ["ect"]
-    }
 
     def find_col(keys):
         for c in df.columns:
@@ -122,12 +109,16 @@ def analyze_dataframe(df, ambient_temp):
                     return c
         return None
 
-    cols = {}
-    for key, keys in col_map.items():
-        col = find_col(keys)
-        if not col:
-            raise ValueError(f"Colonne manquante : {key}")
-        cols[key] = col
+    cols = {
+        "Time": find_col(["section time", "time"]),
+        "TPS": find_col(["tps"]),
+        "AFR": find_col(["lambda"]),
+        "Fuel": find_col(["fuel"]),
+        "ECT": find_col(["ect"])
+    }
+
+    if None in cols.values():
+        raise ValueError("Colonnes essentielles manquantes")
 
     df["Time"] = pd.to_numeric(df[cols["Time"]], errors="coerce")
     df["TPS"] = pd.to_numeric(df[cols["TPS"]], errors="coerce")
@@ -135,18 +126,18 @@ def analyze_dataframe(df, ambient_temp):
     df["Fuel"] = pd.to_numeric(df[cols["Fuel"]], errors="coerce")
     df["ECT"] = pd.to_numeric(df[cols["ECT"]], errors="coerce")
 
-    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel", "ECT"])
+    df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel"])
     df = df[df["Time"].diff().fillna(0) >= 0]
 
     df["Lambda"] = df["AFR"] / 14.7
 
-    # 🔥 CONDITIONS
-    tps_ok = df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
-    lambda_ok = df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
-    fuel_ok = df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"])
-    ect_ok = df["ECT"] <= (ambient_temp + CFG["temp_offset"])
+    tps_bad = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
+    lambda_bad = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
+    fuel_bad = ~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"])
+    ect_ok = df["ECT"] <= ambient_temp + CFG["temp_offset"]
 
-    df["OUT"] = ~(tps_ok & lambda_ok & fuel_ok & ect_ok)
+    # 🔥 LOGIQUE CHEAT PROPRE
+    df["OUT"] = tps_bad & lambda_bad & fuel_bad & ect_ok
 
     df["dt"] = df["Time"].diff().fillna(0)
 
@@ -204,18 +195,15 @@ def upload():
     except Exception as e:
         return render_template_string(
             HTML,
-            message=f"Erreur lors de l'analyse : {str(e)}"
+            message=f"Erreur d'analyse : {str(e)}"
         )
 
 @app.route("/download")
 def download():
-    return send_file(
-        os.path.join(UPLOAD_DIR, request.args["fname"]),
-        as_attachment=True
-    )
+    return send_file(os.path.join(UPLOAD_DIR, request.args["fname"]), as_attachment=True)
 
-# ================= RENDER =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 

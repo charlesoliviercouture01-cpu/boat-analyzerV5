@@ -33,7 +33,7 @@ HTML = """
 <div class="container">
 
 <div class="d-flex align-items-center justify-content-between mb-5">
-  <img src="{{ url_for('static', filename='precision_logo.png') }}" style="height:100px;">
+  <img src="{{ url_for('static', filename='p_logo_zoom.png') }}" style="height:100px;">
   <h1 class="text-center flex-grow-1">Boat Data Analyzer</h1>
   <img src="{{ url_for('static', filename='image_copy.png') }}" style="height:100px;">
 </div>

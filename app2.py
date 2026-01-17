@@ -14,8 +14,8 @@ CFG = {
     "fuel_min": 40,
     "fuel_max": 60,
     "temp_offset": 20,
-    "cheat_delay": 0.5,          # secondes
-    "min_params_fail": 2         # 🔥 NOUVEAU : minimum de paramètres en faute
+    "cheat_delay": 0.5,
+    "min_params_fail": 2
 }
 
 UPLOAD_DIR = "/tmp"
@@ -31,12 +31,13 @@ HTML = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
 .logo-box {
-  width: 180px;
+  width: 200px;            /* ⬅️ un peu plus large */
   display: flex;
   justify-content: center;
+  align-items: center;
 }
 .logo-box img {
-  max-height: 100px;
+  max-height: 115px;       /* ⬅️ logo légèrement plus grand */
   max-width: 100%;
   object-fit: contain;
 }
@@ -239,4 +240,6 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+
+
 

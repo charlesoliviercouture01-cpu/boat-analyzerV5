@@ -14,7 +14,8 @@ CFG = {
     "fuel_min": 40,
     "fuel_max": 60,
     "temp_offset": 20,
-    "cheat_delay": 0.5
+    "cheat_delay": 0.5,          # secondes
+    "min_params_fail": 2         # 🔥 NOUVEAU : minimum de paramètres en faute
 }
 
 UPLOAD_DIR = "/tmp"
@@ -28,14 +29,36 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+.logo-box {
+  width: 180px;
+  display: flex;
+  justify-content: center;
+}
+.logo-box img {
+  max-height: 100px;
+  max-width: 100%;
+  object-fit: contain;
+}
+</style>
 </head>
+
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<div class="d-flex align-items-center justify-content-between mb-5">
-  <img src="{{ url_for('static', filename='p_logo_zoom.png') }}" style="height:100px;">
-  <h1 class="text-center flex-grow-1">Boat Data Analyzer</h1>
-  <img src="{{ url_for('static', filename='image_copy.png') }}" style="height:100px;">
+<!-- HEADER -->
+<div class="row align-items-center mb-5">
+  <div class="col-3 logo-box">
+    <img src="{{ url_for('static', filename='p_logo_zoom.png') }}">
+  </div>
+
+  <div class="col-6 text-center">
+    <h1 class="m-0">Boat Data Analyzer</h1>
+  </div>
+
+  <div class="col-3 logo-box">
+    <img src="{{ url_for('static', filename='image_copy.png') }}">
+  </div>
 </div>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
@@ -106,7 +129,7 @@ def load_csv_robuste(file):
 
     return df.reset_index(drop=True)
 
-# ================= ANALYSE AVEC CAUSE =================
+# ================= ANALYSE RECALIBRÉE =================
 def analyze_dataframe(df, ambient_temp):
 
     def find_col(keys):
@@ -139,29 +162,27 @@ def analyze_dataframe(df, ambient_temp):
     df["Lambda"] = df["AFR"] / 14.7
     df["dt"] = df["Time"].diff().fillna(0)
 
-    timers = {
-        "TPS": 0.0,
-        "Lambda": 0.0,
-        "Fuel": 0.0,
-        "ECT": 0.0
-    }
+    cumul = 0.0
 
     for _, row in df.iterrows():
 
-        conditions = {
-            "TPS": not (CFG["tps_min"] <= row["TPS"] <= CFG["tps_max"]),
-            "Lambda": not (CFG["lambda_min"] <= row["Lambda"] <= CFG["lambda_max"]),
-            "Fuel": not (CFG["fuel_min"] <= row["Fuel"] <= CFG["fuel_max"]),
-            "ECT": row["ECT"] > ambient_temp + CFG["temp_offset"]
-        }
+        fails = []
 
-        for key in timers:
-            if conditions[key]:
-                timers[key] += row["dt"]
-                if timers[key] >= CFG["cheat_delay"]:
-                    return df, True, key, row["Time"]
-            else:
-                timers[key] = 0.0
+        if not (CFG["tps_min"] <= row["TPS"] <= CFG["tps_max"]):
+            fails.append("TPS")
+        if not (CFG["lambda_min"] <= row["Lambda"] <= CFG["lambda_max"]):
+            fails.append("Lambda")
+        if not (CFG["fuel_min"] <= row["Fuel"] <= CFG["fuel_max"]):
+            fails.append("Fuel")
+        if row["ECT"] > ambient_temp + CFG["temp_offset"]:
+            fails.append("ECT")
+
+        if len(fails) >= CFG["min_params_fail"]:
+            cumul += row["dt"]
+            if cumul >= CFG["cheat_delay"]:
+                return df, True, ", ".join(fails), row["Time"]
+        else:
+            cumul = 0.0
 
     return df, False, None, None
 
@@ -178,10 +199,10 @@ def upload():
         location = request.form["location"]
 
         df = load_csv_robuste(file)
-        df, cheat, param, cheat_time = analyze_dataframe(df, ambient_temp)
+        df, cheat, params, cheat_time = analyze_dataframe(df, ambient_temp)
 
         if cheat:
-            etat = f"FAIL – {param} hors limite à {cheat_time:.2f} s"
+            etat = f"FAIL – {params} à {cheat_time:.2f} s"
         else:
             etat = f"PASS | {location}"
 
@@ -218,6 +239,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-
-
 

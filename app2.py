@@ -13,6 +13,7 @@ CFG = {
     "lambda_max": 1.05,
     "fuel_min": 40,
     "fuel_max": 60,
+    "ect_offset": 20,     # °C au-dessus de la température ambiante
     "cheat_delay": 0.5
 }
 
@@ -66,18 +67,26 @@ HTML = """
 </div>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
+
 <div class="row mb-4">
   <div class="col-md-4">
     <input class="form-control" name="location" placeholder="Emplacement" required>
+  </div>
+  <div class="col-md-4">
+    <input class="form-control" type="number" step="0.1"
+           name="ambient_temp"
+           placeholder="Température ambiante (°C)" required>
   </div>
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
 <button class="btn btn-primary">Analyser</button>
+
 </form>
 
 {% if table %}
 <hr class="my-5">
+
 <h2 class="text-center mb-4 {{ 'text-danger' if cheat else 'text-success' }}">
   {{ etat_global }}
 </h2>
@@ -111,18 +120,17 @@ def load_link_csv(file):
     return df.reset_index(drop=True)
 
 # ================= ANALYSE =================
-def analyze_dataframe(df):
+def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
 
-    # Conversion numérique
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
     df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
     df["Fuel Pressure"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
     df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    # Nettoyage STRICT (0 interdit)
+    # Nettoyage STRICT
     df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel Pressure", "ECT"])
     df = df[
         (df["TPS"] > 0) &
@@ -136,11 +144,17 @@ def analyze_dataframe(df):
     # AFR → Lambda
     df["Lambda"] = df["AFR"] / 14.7
 
-    # Détection OUT (logique officielle)
+    # Conditions individuelles
+    df["TPS_OK"] = df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
+    df["Lambda_OK"] = df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
+    df["Fuel_OK"] = df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"])
+    df["ECT_OK"] = df["ECT"] <= (ambient_temp + CFG["ect_offset"])
+
+    # OUT = conditions moteur simultanément hors tolérance
     df["OUT"] = (
-        (~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])) &
-        (~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])) &
-        (~df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"]))
+        (~df["TPS_OK"]) &
+        (~df["Lambda_OK"]) &
+        (~df["Fuel_OK"])
     )
 
     df["dt"] = df["Time"].diff().fillna(0)
@@ -159,13 +173,16 @@ def analyze_dataframe(df):
         else:
             cumul = 0.0
 
-    # Colonnes affichées (Fuel visible)
     display_cols = [
         "Time",
         "TPS",
         "Lambda",
         "Fuel Pressure",
         "ECT",
+        "TPS_OK",
+        "Lambda_OK",
+        "Fuel_OK",
+        "ECT_OK",
         "OUT"
     ]
 
@@ -180,9 +197,10 @@ def index():
 def upload():
     file = request.files["file"]
     location = request.form["location"]
+    ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
 
     df = load_link_csv(file)
-    df, cheat, cheat_time = analyze_dataframe(df)
+    df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
 
     if cheat:
         etat = f"CHEAT – début à {cheat_time:.2f} s"
@@ -214,3 +232,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+

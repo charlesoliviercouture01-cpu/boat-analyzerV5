@@ -27,33 +27,24 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-
 <style>
 body { background:#111; color:white; }
-
-.header-row { height:130px; }
-.logo-box { display:flex; align-items:center; justify-content:center; }
+th, td { text-align:center !important; }
 .logo-box img { max-height:115px; object-fit:contain; }
-
-table { font-size:14px; }
-th { text-align:center !important; }
-td { text-align:center !important; }
 </style>
 </head>
 
 <body class="p-4">
 <div class="container">
 
-<div class="row header-row mb-5">
-  <div class="col-3 logo-box">
+<div class="row mb-5">
+  <div class="col-3 text-center">
     <img src="{{ url_for('static', filename='p_logo_zoom.png') }}">
   </div>
-
-  <div class="col-6 text-center d-flex align-items-center justify-content-center">
+  <div class="col-6 text-center">
     <h1>Boat Data Analyzer</h1>
   </div>
-
-  <div class="col-3 logo-box">
+  <div class="col-3 text-center">
     <img src="{{ url_for('static', filename='image_copy.png') }}">
   </div>
 </div>
@@ -76,7 +67,6 @@ td { text-align:center !important; }
 
 {% if table %}
 <hr class="my-5">
-
 <h2 class="text-center mb-4 {{ 'text-danger' if cheat else 'text-success' }}">
   {{ etat_global }}
 </h2>
@@ -88,7 +78,6 @@ td { text-align:center !important; }
 <div class="d-flex justify-content-center mb-4">
   <a class="btn btn-success btn-lg" href="{{ download }}">Download CSV</a>
 </div>
-
 {% endif %}
 
 </div>
@@ -96,7 +85,7 @@ td { text-align:center !important; }
 </html>
 """
 
-# ================= CSV ROBUST =================
+# ================= CSV LOAD =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
@@ -110,11 +99,14 @@ def load_link_csv(file):
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
     df.columns = header
-
     df = df.reset_index(drop=True)
 
-    # 🔥 Supprime colonne parasite "19"
+    # 🔥 SUPPRESSION COMPLETE colonne "19"
+    df = df.drop(columns=[col for col in df.columns if str(col).strip() == "19"], errors="ignore")
+
+    # 🔥 SUPPRESSION colonnes numériques ou vides
     df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]
+    df = df.loc[:, df.columns.notna()]
 
     return df
 
@@ -134,18 +126,14 @@ def analyze_dataframe(df, ambient_temp):
 
     df["Lambda"] = df["AFR"] / 14.7
 
-    # 🔥 Condition réaliste : au moins 2 paramètres hors plage
+    # Conditions individuelles
     df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
     df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
     df["OUT_FUEL"] = ~df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"])
 
-    df["OUT_COUNT"] = (
-        df["OUT_TPS"].astype(int) +
-        df["OUT_LAMBDA"].astype(int) +
-        df["OUT_FUEL"].astype(int)
-    )
-
-    df["OUT"] = df["OUT_COUNT"] >= 2
+    # 🔥 CORRECTION LOGIQUE :
+    # Cheat seulement si les 3 sont hors plage EN MÊME TEMPS
+    df["OUT"] = df["OUT_TPS"] & df["OUT_LAMBDA"] & df["OUT_FUEL"]
 
     df["dt"] = df["Time"].diff().fillna(0)
 
@@ -154,7 +142,7 @@ def analyze_dataframe(df, ambient_temp):
     cheat_time = None
 
     for t, out, dt in zip(df["Time"], df["OUT"], df["dt"]):
-        if bool(out):
+        if out:
             cumul += dt
             if cumul >= CFG["cheat_delay"]:
                 cheat_detected = True
@@ -197,7 +185,15 @@ def upload():
     path = os.path.join(UPLOAD_DIR, fname)
     df.to_csv(path, index=False)
 
-    table = df.head(100).to_html(
+    # 🔥 On affiche seulement colonnes utiles
+    display_cols = [
+        "Time", "TPS", "Lambda", "Fuel Pressure",
+        "OUT_TPS", "OUT_LAMBDA", "OUT_FUEL", "OUT"
+    ]
+
+    display_cols = [c for c in display_cols if c in df.columns]
+
+    table = df[display_cols].head(100).to_html(
         classes="table table-dark table-bordered table-striped",
         index=False
     )
@@ -222,3 +218,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+

@@ -27,24 +27,51 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
 <style>
-body { background:#111; color:white; }
-th, td { text-align:center !important; }
-.logo-box img { max-height:115px; object-fit:contain; }
+body {
+    background:#111;
+    color:white;
+}
+
+/* HEADER */
+.header-row {
+    height: 110px;
+}
+
+.logo-box {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+/* 🔥 LOGOS DÉZOOMÉS */
+.logo-box img {
+    max-height: 70px;   /* avant 115 → maintenant plus petit */
+    max-width: 90%;
+    object-fit: contain;
+}
+
+th, td {
+    text-align:center !important;
+}
 </style>
 </head>
 
 <body class="p-4">
 <div class="container">
 
-<div class="row mb-5">
-  <div class="col-3 text-center">
+<!-- HEADER -->
+<div class="row header-row mb-5">
+  <div class="col-3 logo-box">
     <img src="{{ url_for('static', filename='p_logo_zoom.png') }}">
   </div>
-  <div class="col-6 text-center">
-    <h1>Boat Data Analyzer</h1>
+
+  <div class="col-6 d-flex align-items-center justify-content-center">
+    <h1 class="m-0">Boat Data Analyzer</h1>
   </div>
-  <div class="col-3 text-center">
+
+  <div class="col-3 logo-box">
     <img src="{{ url_for('static', filename='image_copy.png') }}">
   </div>
 </div>
@@ -67,6 +94,7 @@ th, td { text-align:center !important; }
 
 {% if table %}
 <hr class="my-5">
+
 <h2 class="text-center mb-4 {{ 'text-danger' if cheat else 'text-success' }}">
   {{ etat_global }}
 </h2>
@@ -101,13 +129,8 @@ def load_link_csv(file):
     df.columns = header
     df = df.reset_index(drop=True)
 
-    # 🔥 Supprime colonne "19"
     df = df.drop(columns=[col for col in df.columns if str(col).strip() == "19"], errors="ignore")
-
-    # 🔥 Supprime colonnes numériques parasites
     df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]
-
-    # 🔥 Supprime colonnes vides
     df = df.loc[:, df.columns.notna()]
 
     return df
@@ -118,14 +141,12 @@ def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
 
-    # Conversion sécurisée
     df["Time"] = pd.to_numeric(df.get("Section Time", None), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)", None), errors="coerce")
     df["AFR"] = pd.to_numeric(df.get("Lambda 1", None), errors="coerce")
     df["Fuel Pressure"] = pd.to_numeric(df.get("Fuel Pressure", None), errors="coerce")
     df["ECT"] = pd.to_numeric(df.get("ECT", None), errors="coerce")
 
-    # Supprime lignes invalides
     df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel Pressure", "ECT"])
 
     if df.empty:
@@ -137,7 +158,6 @@ def analyze_dataframe(df, ambient_temp):
     df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
     df["OUT_FUEL"] = ~df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"])
 
-    # CHEAT seulement si les 3 hors plage
     df["OUT"] = df["OUT_TPS"] & df["OUT_LAMBDA"] & df["OUT_FUEL"]
 
     df["dt"] = df["Time"].diff().fillna(0)
@@ -162,22 +182,13 @@ def analyze_dataframe(df, ambient_temp):
 # ================= ROUTES =================
 @app.route("/")
 def index():
-    return render_template_string(
-        HTML,
-        table=None,
-        download=None,
-        etat_global="",
-        cheat=False
-    )
+    return render_template_string(HTML, table=None, download=None, etat_global="", cheat=False)
 
 
 @app.route("/upload", methods=["POST"])
 def upload():
 
     file = request.files.get("file")
-    if not file:
-        return "No file uploaded"
-
     ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
     location = request.form["location"]
 
@@ -193,14 +204,7 @@ def upload():
     path = os.path.join(UPLOAD_DIR, fname)
     df.to_csv(path, index=False)
 
-    display_cols = [
-        "Time", "TPS", "Lambda", "Fuel Pressure",
-        "OUT_TPS", "OUT_LAMBDA", "OUT_FUEL", "OUT"
-    ]
-
-    display_cols = [c for c in display_cols if c in df.columns]
-
-    table = df[display_cols].head(100).to_html(
+    table = df.head(100).to_html(
         classes="table table-dark table-bordered table-striped",
         index=False
     )
@@ -216,11 +220,9 @@ def upload():
 
 @app.route("/download")
 def download():
-    fname = request.args.get("fname")
-    path = os.path.join(UPLOAD_DIR, fname)
-    return send_file(path, as_attachment=True)
+    return send_file(os.path.join(UPLOAD_DIR, request.args.get("fname")), as_attachment=True)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)

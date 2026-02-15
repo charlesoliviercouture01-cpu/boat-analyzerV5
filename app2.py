@@ -101,11 +101,13 @@ def load_link_csv(file):
     df.columns = header
     df = df.reset_index(drop=True)
 
-    # 🔥 SUPPRESSION COMPLETE colonne "19"
+    # 🔥 Supprime colonne "19"
     df = df.drop(columns=[col for col in df.columns if str(col).strip() == "19"], errors="ignore")
 
-    # 🔥 SUPPRESSION colonnes numériques ou vides
+    # 🔥 Supprime colonnes numériques parasites
     df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]
+
+    # 🔥 Supprime colonnes vides
     df = df.loc[:, df.columns.notna()]
 
     return df
@@ -116,23 +118,26 @@ def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
 
-    df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
-    df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
-    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
-    df["Fuel Pressure"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
-    df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
+    # Conversion sécurisée
+    df["Time"] = pd.to_numeric(df.get("Section Time", None), errors="coerce")
+    df["TPS"] = pd.to_numeric(df.get("TPS (Main)", None), errors="coerce")
+    df["AFR"] = pd.to_numeric(df.get("Lambda 1", None), errors="coerce")
+    df["Fuel Pressure"] = pd.to_numeric(df.get("Fuel Pressure", None), errors="coerce")
+    df["ECT"] = pd.to_numeric(df.get("ECT", None), errors="coerce")
 
+    # Supprime lignes invalides
     df = df.dropna(subset=["Time", "TPS", "AFR", "Fuel Pressure", "ECT"])
+
+    if df.empty:
+        return df, False, None
 
     df["Lambda"] = df["AFR"] / 14.7
 
-    # Conditions individuelles
     df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
     df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
     df["OUT_FUEL"] = ~df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"])
 
-    # 🔥 CORRECTION LOGIQUE :
-    # Cheat seulement si les 3 sont hors plage EN MÊME TEMPS
+    # CHEAT seulement si les 3 hors plage
     df["OUT"] = df["OUT_TPS"] & df["OUT_LAMBDA"] & df["OUT_FUEL"]
 
     df["dt"] = df["Time"].diff().fillna(0)
@@ -169,7 +174,10 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
 
-    file = request.files["file"]
+    file = request.files.get("file")
+    if not file:
+        return "No file uploaded"
+
     ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
     location = request.form["location"]
 
@@ -185,7 +193,6 @@ def upload():
     path = os.path.join(UPLOAD_DIR, fname)
     df.to_csv(path, index=False)
 
-    # 🔥 On affiche seulement colonnes utiles
     display_cols = [
         "Time", "TPS", "Lambda", "Fuel Pressure",
         "OUT_TPS", "OUT_LAMBDA", "OUT_FUEL", "OUT"
@@ -209,13 +216,11 @@ def upload():
 
 @app.route("/download")
 def download():
-    return send_file(
-        os.path.join(UPLOAD_DIR, request.args["fname"]),
-        as_attachment=True
-    )
+    fname = request.args.get("fname")
+    path = os.path.join(UPLOAD_DIR, fname)
+    return send_file(path, as_attachment=True)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="0.0.0.0", port=port, debug=False)

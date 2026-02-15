@@ -14,7 +14,7 @@ CFG = {
     "fuel_min": 40,
     "fuel_max": 60,
     "ect_offset": 20,
-    "cheat_delay": 0.5
+    "delay": 0.5
 }
 
 UPLOAD_DIR = "/tmp"
@@ -28,13 +28,11 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-
 <style>
-.header-row { height: 130px; }
-.logo-box { height: 130px; display:flex; align-items:center; justify-content:center; }
+.header-row { height:130px; }
+.logo-box { height:130px; display:flex; align-items:center; justify-content:center; }
 .logo-box img { max-height:115px; object-fit:contain; }
 .title-box { height:130px; display:flex; align-items:center; justify-content:center; }
-
 table { text-align:center; }
 th { background-color:#222 !important; }
 </style>
@@ -73,8 +71,8 @@ th { background-color:#222 !important; }
 
 {% if table %}
 <hr class="my-5">
-<h2 class="text-center mb-4 {{ status_color }}">
-  {{ etat_global }}
+<h2 class="text-center mb-4 {{ color }}">
+  {{ status }}
 </h2>
 
 <div class="d-flex justify-content-center mb-4">
@@ -91,79 +89,92 @@ th { background-color:#222 !important; }
 </html>
 """
 
-# ================= CSV =================
+# ================= LOAD CSV =================
 def load_link_csv(file):
     raw = pd.read_csv(file, header=None, sep=",", engine="python", on_bad_lines="skip")
+
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
     df.columns = header
+
+    # Nettoyage colonnes invalides (corrige la colonne "19")
+    df = df.loc[:, df.columns.notna()]
+    df = df.loc[:, ~df.columns.astype(str).str.match(r"^\\d+$")]
+
     return df.reset_index(drop=True)
 
 # ================= ANALYSE =================
-def analyze_dataframe(df, ambient_temp):
+def analyze(df, ambient_temp):
 
     df = df.copy()
 
-    df["Time (s)"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
+    df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
     df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
-    df["Fuel Pressure"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
+    df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
     df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    df = df.dropna(subset=["Time (s)", "TPS", "AFR", "Fuel Pressure", "ECT"])
-    df = df[(df["TPS"]>0)&(df["AFR"]>0)&(df["Fuel Pressure"]>0)&(df["ECT"]>0)]
-    df = df[df["Time (s)"].diff().fillna(0) >= 0]
+    df = df.dropna(subset=["Time","TPS","AFR","Fuel","ECT"])
+    df = df[(df["TPS"]>0)&(df["AFR"]>0)&(df["Fuel"]>0)&(df["ECT"]>0)]
+    df = df[df["Time"].diff().fillna(0)>=0]
 
-    df["Lambda"] = (df["AFR"] / 14.7).round(3)
+    df["Lambda"] = df["AFR"] / 14.7
 
-    df["TPS OK"] = df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
-    df["Lambda OK"] = df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
-    df["Fuel OK"] = df["Fuel Pressure"].between(CFG["fuel_min"], CFG["fuel_max"])
-    df["ECT OK"] = df["ECT"] <= (ambient_temp + CFG["ect_offset"])
+    df["TPS_OK"] = df["TPS"].between(CFG["tps_min"],CFG["tps_max"])
+    df["Lambda_OK"] = df["Lambda"].between(CFG["lambda_min"],CFG["lambda_max"])
+    df["Fuel_OK"] = df["Fuel"].between(CFG["fuel_min"],CFG["fuel_max"])
+    df["ECT_OK"] = df["ECT"] <= (ambient_temp + CFG["ect_offset"])
 
-    # CHEAT condition
-    df["Engine Fault"] = (~df["TPS OK"]) & (~df["Lambda OK"]) & (~df["Fuel OK"])
+    df["dt"] = df["Time"].diff().fillna(0)
 
-    df["dt"] = df["Time (s)"].diff().fillna(0)
-
-    cumul = 0
     cheat = False
+    fail = False
     cheat_time = None
 
-    for t, fault, dt in zip(df["Time (s)"], df["Engine Fault"], df["dt"]):
-        if fault:
-            cumul += dt
-            if cumul >= CFG["cheat_delay"]:
+    cumul_cheat = 0
+    cumul_fail = 0
+
+    for i in range(len(df)):
+        out_all = (~df["TPS_OK"].iloc[i] and
+                   ~df["Lambda_OK"].iloc[i] and
+                   ~df["Fuel_OK"].iloc[i])
+
+        out_any = (~df["TPS_OK"].iloc[i] or
+                   ~df["Lambda_OK"].iloc[i] or
+                   ~df["Fuel_OK"].iloc[i] or
+                   ~df["ECT_OK"].iloc[i])
+
+        dt = df["dt"].iloc[i]
+
+        # CHEAT
+        if out_all:
+            cumul_cheat += dt
+            if cumul_cheat >= CFG["delay"]:
                 cheat = True
-                cheat_time = t
+                cheat_time = df["Time"].iloc[i]
                 break
         else:
-            cumul = 0
+            cumul_cheat = 0
 
-    # FAIL if any critical parameter false
-    fail = (~df["TPS OK"] | ~df["Lambda OK"] | ~df["Fuel OK"] | ~df["ECT OK"]).any()
+        # FAIL (durée minimale aussi)
+        if out_any:
+            cumul_fail += dt
+            if cumul_fail >= CFG["delay"]:
+                fail = True
+        else:
+            cumul_fail = 0
 
-    display_cols = [
-        "Time (s)",
-        "TPS",
-        "Lambda",
-        "Fuel Pressure",
-        "ECT",
-        "TPS OK",
-        "Lambda OK",
-        "Fuel OK",
-        "ECT OK",
-        "Engine Fault"
-    ]
+    display = df[[
+        "Time","TPS","Lambda","Fuel","ECT",
+        "TPS_OK","Lambda_OK","Fuel_OK","ECT_OK"
+    ]].round(2)
 
-    df = df[display_cols].round(2)
-
-    return df, cheat, cheat_time, fail
+    return display, cheat, fail, cheat_time
 
 # ================= ROUTES =================
 @app.route("/")
 def index():
-    return render_template_string(HTML, table=None)
+    return render_template_string(HTML)
 
 @app.route("/upload", methods=["POST"])
 def upload():
@@ -172,37 +183,37 @@ def upload():
     ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
 
     df = load_link_csv(file)
-    df, cheat, cheat_time, fail = analyze_dataframe(df, ambient_temp)
+    df, cheat, fail, cheat_time = analyze(df, ambient_temp)
 
     if cheat:
-        etat = f"CHEAT – début à {cheat_time:.2f} s"
+        status = f"CHEAT – début à {cheat_time:.2f} s"
         color = "text-danger"
     elif fail:
-        etat = f"FAIL – Paramètre hors tolérance"
+        status = "FAIL – Paramètre hors tolérance prolongé"
         color = "text-warning"
     else:
-        etat = f"PASS | {location}"
+        status = f"PASS | {location}"
         color = "text-success"
 
     fname = f"result_{datetime.now().timestamp()}.csv"
-    path = os.path.join(UPLOAD_DIR, fname)
-    df.to_csv(path, index=False)
+    path = os.path.join(UPLOAD_DIR,fname)
+    df.to_csv(path,index=False)
 
-    table = df.head(100).to_html(classes="table table-dark table-striped", index=False)
+    table = df.head(100).to_html(classes="table table-dark table-striped",index=False)
 
     return render_template_string(
         HTML,
         table=table,
-        download=url_for("download", fname=fname),
-        etat_global=etat,
-        status_color=color
+        download=url_for("download",fname=fname),
+        status=status,
+        color=color
     )
 
 @app.route("/download")
 def download():
-    return send_file(os.path.join(UPLOAD_DIR, request.args["fname"]), as_attachment=True)
+    return send_file(os.path.join(UPLOAD_DIR,request.args["fname"]),as_attachment=True)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+if __name__=="__main__":
+    port=int(os.environ.get("PORT","5000"))
+    app.run(host="0.0.0.0",port=port)
 

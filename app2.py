@@ -9,15 +9,9 @@ app = Flask(__name__)
 CFG = {
     "tps_min": 90,
     "tps_max": 105,
-
     "lambda_min": 0.75,
     "lambda_max": 1.05,
-
-    # Nouvelle règle HRL
-    # conforme si <= 55
     "fuel_max": 55,
-
-    # délai pour détecter un cheat réel
     "cheat_delay": 0.4
 }
 
@@ -47,9 +41,7 @@ HTML = """
   </div>
 
   <div class="col-md-4">
-    <input class="form-control"
-           type="number"
-           step="0.1"
+    <input class="form-control" type="number" step="0.1"
            name="ambient_temp"
            placeholder="Température ambiante"
            required>
@@ -83,7 +75,7 @@ HTML = """
 </html>
 """
 
-# ================= LOAD CSV =================
+# ================= CSV ROBUSTE =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
@@ -94,9 +86,12 @@ def load_link_csv(file):
         on_bad_lines="skip"
     )
 
+    # sécurité si fichier plus court
+    if len(raw) < 25:
+        raise ValueError("CSV trop court")
+
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
-
     df.columns = header
     df = df.reset_index(drop=True)
 
@@ -111,31 +106,18 @@ def analyze_dataframe(df, ambient_temp):
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
     df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
-    df["Fuel_Pressure"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
+    df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
     df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    df = df.dropna(subset=["Time","TPS","AFR","Fuel_Pressure","ECT"])
+    df = df.dropna(subset=["Time","TPS","AFR","Fuel","ECT"])
 
-    # Lambda réel
     df["Lambda"] = df["AFR"] / 14.7
 
-    # ================= TESTS HRL =================
+    df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
+    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
 
-    df["OUT_TPS"] = ~df["TPS"].between(
-        CFG["tps_min"],
-        CFG["tps_max"]
-    )
-
-    df["OUT_LAMBDA"] = ~df["Lambda"].between(
-        CFG["lambda_min"],
-        CFG["lambda_max"]
-    )
-
-    # ================= NOUVELLE LOGIQUE FUEL =================
-    # conforme si <= 55
-    df["OUT_FUEL"] = df["Fuel_Pressure"] > CFG["fuel_max"]
-
-    # ================= DETECTION CHEAT =================
+    # règle HRL
+    df["OUT_FUEL"] = df["Fuel"] > CFG["fuel_max"]
 
     df["OUT"] = (
         df["OUT_TPS"] |
@@ -150,10 +132,8 @@ def analyze_dataframe(df, ambient_temp):
     cheat_time = None
 
     for t, out, dt in zip(df["Time"], df["OUT"], df["dt"]):
-
         if out:
             cumul += dt
-
             if cumul >= CFG["cheat_delay"]:
                 cheat = True
                 cheat_time = t
@@ -178,43 +158,46 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
 
-    file = request.files["file"]
+    try:
+        file = request.files["file"]
 
-    ambient_temp = float(
-        request.form["ambient_temp"].replace(",", ".")
-    )
+        ambient_temp = float(
+            request.form["ambient_temp"].replace(",", ".")
+        )
 
-    location = request.form["location"]
+        location = request.form["location"]
 
-    df = load_link_csv(file)
+        df = load_link_csv(file)
 
-    df, cheat, cheat_time = analyze_dataframe(
-        df,
-        ambient_temp
-    )
+        df, cheat, cheat_time = analyze_dataframe(
+            df,
+            ambient_temp
+        )
 
-    if cheat:
-        etat = f"CHEAT détecté à {cheat_time:.2f}s"
-    else:
-        etat = f"PASS | {location}"
+        if cheat:
+            etat = f"CHEAT détecté à {cheat_time:.2f}s"
+        else:
+            etat = f"PASS | {location}"
 
-    fname = f"result_{datetime.now().timestamp()}.csv"
-    path = os.path.join(UPLOAD_DIR, fname)
+        fname = f"result_{datetime.now().timestamp()}.csv"
+        path = os.path.join(UPLOAD_DIR, fname)
+        df.to_csv(path, index=False)
 
-    df.to_csv(path, index=False)
+        table = df.head(120).to_html(
+            classes="table table-dark table-striped",
+            index=False
+        )
 
-    table = df.head(120).to_html(
-        classes="table table-dark table-striped",
-        index=False
-    )
+        return render_template_string(
+            HTML,
+            table=table,
+            cheat=cheat,
+            etat=etat,
+            download=url_for("download", fname=fname)
+        )
 
-    return render_template_string(
-        HTML,
-        table=table,
-        cheat=cheat,
-        etat=etat,
-        download=url_for("download", fname=fname)
-    )
+    except Exception as e:
+        return f"Erreur analyse : {str(e)}"
 
 
 @app.route("/download")

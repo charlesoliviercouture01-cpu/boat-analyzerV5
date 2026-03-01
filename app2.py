@@ -11,8 +11,8 @@ CFG = {
     "tps_max": 105,
     "lambda_min": 0.75,
     "lambda_max": 1.05,
-    "fuel_max": 55,
-    "cheat_delay": 0.4
+    "fuel_min_rule": 55.0,   # RÈGLE HRL
+    "cheat_delay": 0.3
 }
 
 UPLOAD_DIR = "/tmp"
@@ -26,46 +26,81 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+.header-row { height: 120px; }
+.logo-box {
+  height: 120px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.logo-box img {
+  max-height: 90px;
+  object-fit: contain;
+}
+.title-box {
+  height: 120px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+</style>
 </head>
 
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<h1 class="text-center mb-4">Boat Data Analyzer</h1>
-
-<form method="post" action="/upload" enctype="multipart/form-data">
-
-<div class="row mb-4">
-  <div class="col-md-4">
-    <input class="form-control" name="location" placeholder="Location" required>
+<div class="row header-row mb-4">
+  <div class="col-3 logo-box">
+    <img src="{{ url_for('static', filename='p_logo_zoom.png') }}">
   </div>
 
+  <div class="col-6 title-box">
+    <h1 class="m-0 text-center">Boat Data Analyzer</h1>
+  </div>
+
+  <div class="col-3 logo-box">
+    <img src="{{ url_for('static', filename='image_copy.png') }}">
+  </div>
+</div>
+
+<form method="post" action="/upload" enctype="multipart/form-data">
+<div class="row mb-3">
   <div class="col-md-4">
-    <input class="form-control" type="number" step="0.1"
-           name="ambient_temp"
-           placeholder="Température ambiante"
-           required>
+    <input class="form-control" name="boat_id" placeholder="# Embarcation" required>
+  </div>
+  <div class="col-md-4">
+    <input class="form-control" type="date" name="session_date" required>
+  </div>
+  <div class="col-md-4">
+    <input class="form-control" type="time" name="session_time" required>
   </div>
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
 <button class="btn btn-primary">Analyser</button>
-
 </form>
 
 {% if table %}
-<hr>
+<hr class="my-4">
 
-<h2 class="text-center {{ 'text-danger' if cheat else 'text-success' }}">
-{{ etat }}
+<h2 class="text-center {{ 'text-danger' if not pass_test else 'text-success' }}">
+  {{ result_message }}
 </h2>
 
 <div class="text-center mb-3">
-<a class="btn btn-success" href="{{ download }}">Télécharger CSV</a>
+  <strong>Embarcation:</strong> {{ boat_id }} |
+  <strong>Date:</strong> {{ session_date }} |
+  <strong>Heure:</strong> {{ session_time }}
+</div>
+
+<div class="d-flex justify-content-center mb-3">
+  <a class="btn btn-success" href="{{ download }}">Télécharger CSV</a>
 </div>
 
 <div class="table-responsive">
-{{ table|safe }}
+  {{ table|safe }}
 </div>
 
 {% endif %}
@@ -75,115 +110,89 @@ HTML = """
 </html>
 """
 
-# ================= CSV ROBUSTE =================
+# ================= LECTURE ROBUSTE =================
 def load_link_csv(file):
+    raw = pd.read_csv(file, header=None, engine="python", on_bad_lines="skip")
 
-    raw = pd.read_csv(
-        file,
-        header=None,
-        sep=",",
-        engine="python",
-        on_bad_lines="skip"
-    )
-
-    # sécurité si fichier plus court
     if len(raw) < 25:
-        raise ValueError("CSV trop court")
+        raise ValueError("Fichier incomplet")
 
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
     df.columns = header
-    df = df.reset_index(drop=True)
+    df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]  # supprime colonne "19"
 
-    return df
-
+    return df.reset_index(drop=True)
 
 # ================= ANALYSE =================
-def analyze_dataframe(df, ambient_temp):
+def analyze_dataframe(df):
 
     df = df.copy()
 
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
-    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
+    df["Lambda_raw"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
     df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
-    df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    df = df.dropna(subset=["Time","TPS","AFR","Fuel","ECT"])
+    df = df.dropna(subset=["Time", "TPS", "Lambda_raw", "Fuel"])
 
-    df["Lambda"] = df["AFR"] / 14.7
+    df["Lambda"] = df["Lambda_raw"] / 14.7
+
+    # ================= RÈGLES HRL =================
 
     df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
-    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
+    df["OUT_Lambda"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
 
-    # règle HRL
-    df["OUT_FUEL"] = df["Fuel"] > CFG["fuel_max"]
+    # RÈGLE OFFICIELLE
+    df["OUT_Fuel"] = df["Fuel"] < CFG["fuel_min_rule"]
 
-    df["OUT"] = (
-        df["OUT_TPS"] |
-        df["OUT_LAMBDA"] |
-        df["OUT_FUEL"]
-    )
+    df["OUT"] = df["OUT_TPS"] | df["OUT_Lambda"] | df["OUT_Fuel"]
 
     df["dt"] = df["Time"].diff().fillna(0)
 
     cumul = 0
-    cheat = False
-    cheat_time = None
+    fail_time = None
 
     for t, out, dt in zip(df["Time"], df["OUT"], df["dt"]):
         if out:
             cumul += dt
             if cumul >= CFG["cheat_delay"]:
-                cheat = True
-                cheat_time = t
+                fail_time = t
                 break
         else:
             cumul = 0
 
-    return df, cheat, cheat_time
+    pass_test = fail_time is None
 
+    return df, pass_test, fail_time
 
 # ================= ROUTES =================
 @app.route("/")
 def index():
-    return render_template_string(
-        HTML,
-        table=None,
-        cheat=False,
-        etat=""
-    )
-
+    return render_template_string(HTML, table=None)
 
 @app.route("/upload", methods=["POST"])
 def upload():
-
     try:
         file = request.files["file"]
 
-        ambient_temp = float(
-            request.form["ambient_temp"].replace(",", ".")
-        )
-
-        location = request.form["location"]
+        boat_id = request.form["boat_id"]
+        session_date = request.form["session_date"]
+        session_time = request.form["session_time"]
 
         df = load_link_csv(file)
+        df, pass_test, fail_time = analyze_dataframe(df)
 
-        df, cheat, cheat_time = analyze_dataframe(
-            df,
-            ambient_temp
-        )
-
-        if cheat:
-            etat = f"CHEAT détecté à {cheat_time:.2f}s"
+        if pass_test:
+            message = "PASS – Datalog compliant with HRL rules"
         else:
-            etat = f"PASS | {location}"
+            message = f"Datalog NOT compliant with rules – Fail at {fail_time:.2f}s"
 
         fname = f"result_{datetime.now().timestamp()}.csv"
         path = os.path.join(UPLOAD_DIR, fname)
         df.to_csv(path, index=False)
 
-        table = df.head(120).to_html(
+        table = df.head(150).to_html(
             classes="table table-dark table-striped",
             index=False
         )
@@ -191,24 +200,22 @@ def upload():
         return render_template_string(
             HTML,
             table=table,
-            cheat=cheat,
-            etat=etat,
-            download=url_for("download", fname=fname)
+            download=url_for("download", fname=fname),
+            result_message=message,
+            pass_test=pass_test,
+            boat_id=boat_id,
+            session_date=session_date,
+            session_time=session_time
         )
 
     except Exception as e:
-        return f"Erreur analyse : {str(e)}"
-
+        return f"Erreur : {str(e)}"
 
 @app.route("/download")
 def download():
-    return send_file(
-        os.path.join(UPLOAD_DIR, request.args["fname"]),
-        as_attachment=True
-    )
+    return send_file(os.path.join(UPLOAD_DIR, request.args["fname"]), as_attachment=True)
 
-
-# ================= RUN =================
+# ================= RENDER =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)

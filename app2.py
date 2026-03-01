@@ -5,12 +5,13 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# ================= CONFIG HRL =================
+# ================= CONFIG =================
 CFG = {
     "fuel_limit": 55,
     "fuel_noise_tolerance": 54.8,
     "temp_offset": 20,
-    "cheat_delay": 0.30
+    "cheat_delay": 0.30,
+    "max_rows": 60000   # évite blocage Render
 }
 
 UPLOAD_DIR = "/tmp"
@@ -34,19 +35,18 @@ HTML = """
 <form method="post" action="/upload" enctype="multipart/form-data">
 
 <div class="row mb-3">
-  <div class="col-md-6">
-    <input class="form-control" name="location" placeholder="Embarcation / Emplacement" required>
-  </div>
+<div class="col-md-6">
+<input class="form-control" name="location" placeholder="Embarcation / Emplacement" required>
+</div>
 
-  <div class="col-md-6">
-    <input class="form-control" type="number" step="0.1"
-           name="ambient_temp"
-           placeholder="Température ambiante (°C)" required>
-  </div>
+<div class="col-md-6">
+<input class="form-control" type="number" step="0.1"
+name="ambient_temp"
+placeholder="Température ambiante (°C)" required>
+</div>
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
-
 <button class="btn btn-primary">Analyser</button>
 
 </form>
@@ -65,7 +65,6 @@ HTML = """
 <div class="table-responsive mb-5">
 {{ table|safe }}
 </div>
-
 {% endif %}
 
 </div>
@@ -81,18 +80,20 @@ def load_link_csv(file):
         header=None,
         sep=",",
         engine="python",
-        on_bad_lines="skip"
+        on_bad_lines="skip",
+        nrows=CFG["max_rows"]
     )
 
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
     df.columns = header
 
+    # supprime colonnes vides
     df = df.loc[:, df.columns.notna()]
 
     return df.reset_index(drop=True)
 
-# ================= ANALYSE =================
+# ================= ANALYSE RAPIDE =================
 def analyze_dataframe(df, ambient_temp):
 
     df = df.copy()
@@ -102,28 +103,32 @@ def analyze_dataframe(df, ambient_temp):
     df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
     df = df.dropna(subset=["Time", "Fuel", "ECT"])
-    df = df[df["Time"].diff().fillna(0) >= 0]
 
-    # ---------- règles ----------
-    df["OUT_FUEL"] = df["Fuel"] < CFG["fuel_noise_tolerance"]
-    df["OUT_TEMP"] = df["ECT"] > (ambient_temp + CFG["temp_offset"])
-
-    df["OUT"] = df["OUT_FUEL"] | df["OUT_TEMP"]
+    # tri obligatoire pour éviter boucle infinie
+    df = df.sort_values("Time")
 
     df["dt"] = df["Time"].diff().fillna(0)
+
+    # supprime temps négatif
+    df = df[df["dt"] >= 0]
+
+    df["OUT_FUEL"] = df["Fuel"] < CFG["fuel_noise_tolerance"]
+    df["OUT_TEMP"] = df["ECT"] > (ambient_temp + CFG["temp_offset"])
+    df["OUT"] = df["OUT_FUEL"] | df["OUT_TEMP"]
 
     cumul = 0
     cheat = False
     cheat_time = None
 
-    for t, out, dt in zip(df["Time"], df["OUT"], df["dt"]):
+    # boucle ultra rapide
+    for i in range(len(df)):
 
-        if bool(out):
-            cumul += dt
+        if df.iloc[i]["OUT"]:
+            cumul += df.iloc[i]["dt"]
 
             if cumul >= CFG["cheat_delay"]:
                 cheat = True
-                cheat_time = t
+                cheat_time = df.iloc[i]["Time"]
                 break
         else:
             cumul = 0
@@ -145,12 +150,15 @@ def index():
 def upload():
 
     try:
-
         file = request.files["file"]
         location = request.form["location"]
         ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
 
         df = load_link_csv(file)
+
+        if len(df) == 0:
+            return "Erreur : fichier vide ou format incorrect"
+
         df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
 
         if cheat:

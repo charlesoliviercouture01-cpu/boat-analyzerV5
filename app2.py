@@ -5,13 +5,15 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
+# ================= CONFIG HRL =================
 CFG = {
-    "fuel_limit": 55,
-    "fuel_noise_tolerance": 54.8,
-    "temp_offset": 20,
-    "cheat_delay": 0.30,
-    "max_rows": 60000   # évite blocage Render
+    "fuel_min": 54.8,
+    "lambda_min": 0.78,
+    "lambda_max": 0.95,
+    "tps_min": 90,
+    "temp_offset": 25,
+    "cheat_delay": 0.35,
+    "max_rows": 45000
 }
 
 UPLOAD_DIR = "/tmp"
@@ -25,16 +27,59 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+
+.header-row{
+height:120px;
+}
+
+.logo-box{
+height:120px;
+display:flex;
+align-items:center;
+justify-content:center;
+}
+
+.logo-box img{
+max-height:95px;
+object-fit:contain;
+}
+
+.title-box{
+display:flex;
+align-items:center;
+justify-content:center;
+height:120px;
+}
+
+</style>
+
 </head>
 
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<h1 class="text-center mb-4">Boat Data Analyzer</h1>
+<div class="row header-row mb-5">
+
+<div class="col-3 logo-box">
+<img src="{{ url_for('static', filename='precision_logo.png') }}">
+</div>
+
+<div class="col-6 title-box">
+<h1 class="text-center m-0">Boat Data Analyzer</h1>
+</div>
+
+<div class="col-3 logo-box">
+<img src="{{ url_for('static', filename='image_copy.png') }}">
+</div>
+
+</div>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
 <div class="row mb-3">
+
 <div class="col-md-6">
 <input class="form-control" name="location" placeholder="Embarcation / Emplacement" required>
 </div>
@@ -44,9 +89,11 @@ HTML = """
 name="ambient_temp"
 placeholder="Température ambiante (°C)" required>
 </div>
+
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
+
 <button class="btn btn-primary">Analyser</button>
 
 </form>
@@ -65,6 +112,7 @@ placeholder="Température ambiante (°C)" required>
 <div class="table-responsive mb-5">
 {{ table|safe }}
 </div>
+
 {% endif %}
 
 </div>
@@ -72,7 +120,7 @@ placeholder="Température ambiante (°C)" required>
 </html>
 """
 
-# ================= CSV ROBUSTE =================
+# ================= CSV FAST =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
@@ -88,47 +136,56 @@ def load_link_csv(file):
     df = raw.iloc[22:].copy()
     df.columns = header
 
-    # supprime colonnes vides
     df = df.loc[:, df.columns.notna()]
 
     return df.reset_index(drop=True)
 
-# ================= ANALYSE RAPIDE =================
-def analyze_dataframe(df, ambient_temp):
+# ================= ANALYSE HRL =================
+def analyze_dataframe(df, ambient):
 
     df = df.copy()
 
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
+    df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
     df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
+    df["LambdaRaw"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
     df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    df = df.dropna(subset=["Time", "Fuel", "ECT"])
+    df = df.dropna(subset=["Time","TPS","Fuel","LambdaRaw","ECT"])
 
-    # tri obligatoire pour éviter boucle infinie
     df = df.sort_values("Time")
 
     df["dt"] = df["Time"].diff().fillna(0)
-
-    # supprime temps négatif
     df = df[df["dt"] >= 0]
 
-    df["OUT_FUEL"] = df["Fuel"] < CFG["fuel_noise_tolerance"]
-    df["OUT_TEMP"] = df["ECT"] > (ambient_temp + CFG["temp_offset"])
-    df["OUT"] = df["OUT_FUEL"] | df["OUT_TEMP"]
+    # AFR -> Lambda conversion automatique
+    df["Lambda"] = df["LambdaRaw"]/14.7
+
+    # règles HRL
+    df["OUT_FUEL"] = df["Fuel"] < CFG["fuel_min"]
+    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"],CFG["lambda_max"])
+    df["OUT_TPS"] = df["TPS"] < CFG["tps_min"]
+    df["OUT_TEMP"] = df["ECT"] > (ambient + CFG["temp_offset"])
+
+    df["OUT"] = (
+        df["OUT_FUEL"] |
+        df["OUT_LAMBDA"] |
+        df["OUT_TPS"] |
+        df["OUT_TEMP"]
+    )
 
     cumul = 0
     cheat = False
     cheat_time = None
 
-    # boucle ultra rapide
-    for i in range(len(df)):
+    for t,out,dt in zip(df["Time"],df["OUT"],df["dt"]):
 
-        if df.iloc[i]["OUT"]:
-            cumul += df.iloc[i]["dt"]
+        if out:
+            cumul += dt
 
             if cumul >= CFG["cheat_delay"]:
                 cheat = True
-                cheat_time = df.iloc[i]["Time"]
+                cheat_time = t
                 break
         else:
             cumul = 0
@@ -150,16 +207,13 @@ def index():
 def upload():
 
     try:
+
         file = request.files["file"]
         location = request.form["location"]
-        ambient_temp = float(request.form["ambient_temp"].replace(",", "."))
+        ambient = float(request.form["ambient_temp"].replace(",", "."))
 
         df = load_link_csv(file)
-
-        if len(df) == 0:
-            return "Erreur : fichier vide ou format incorrect"
-
-        df, cheat, cheat_time = analyze_dataframe(df, ambient_temp)
+        df, cheat, cheat_time = analyze_dataframe(df, ambient)
 
         if cheat:
             etat = "Datalog NOT compliant with rules"

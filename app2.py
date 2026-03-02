@@ -7,13 +7,21 @@ app = Flask(__name__)
 
 # ================= CONFIG HRL =================
 CFG = {
-    "fuel_min": 54.8,
+
+    # Pleine charge moteur
+    "tps_min": 90,
+    "tps_max": 105,
+
+    # Lambda course sécuritaire
     "lambda_min": 0.78,
     "lambda_max": 0.95,
-    "tps_min": 90,
-    "temp_offset": 25,
-    "cheat_delay": 0.35,
-    "max_rows": 45000
+
+    # Fuel pression réelle terrain HRL
+    "fuel_min": 52,
+    "fuel_max": 56,
+
+    # délai anti faux positif
+    "cheat_delay": 0.7
 }
 
 UPLOAD_DIR = "/tmp"
@@ -27,89 +35,43 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-
-<style>
-
-.header-row{
-height:120px;
-}
-
-.logo-box{
-height:120px;
-display:flex;
-align-items:center;
-justify-content:center;
-}
-
-.logo-box img{
-max-height:95px;
-object-fit:contain;
-}
-
-.title-box{
-display:flex;
-align-items:center;
-justify-content:center;
-height:120px;
-}
-
-</style>
-
 </head>
 
 <body class="p-4 bg-dark text-light">
 <div class="container">
 
-<div class="row header-row mb-5">
-
-<div class="col-3 logo-box">
-<img src="{{ url_for('static', filename='precision_logo.png') }}">
-</div>
-
-<div class="col-6 title-box">
-<h1 class="text-center m-0">Boat Data Analyzer</h1>
-</div>
-
-<div class="col-3 logo-box">
-<img src="{{ url_for('static', filename='image_copy.png') }}">
-</div>
-
-</div>
+<h2 class="text-center mb-4">Boat Data Analyzer</h2>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
 <div class="row mb-3">
+  <div class="col-md-4">
+    <input class="form-control" name="location" placeholder="Emplacement" required>
+  </div>
 
-<div class="col-md-6">
-<input class="form-control" name="location" placeholder="Embarcation / Emplacement" required>
-</div>
-
-<div class="col-md-6">
-<input class="form-control" type="number" step="0.1"
-name="ambient_temp"
-placeholder="Température ambiante (°C)" required>
-</div>
-
+  <div class="col-md-4">
+    <input class="form-control" name="ambient_temp" placeholder="Température ambiante (°C)" required>
+  </div>
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
-
 <button class="btn btn-primary">Analyser</button>
 
 </form>
 
 {% if table %}
-<hr class="my-5">
 
-<h2 class="text-center mb-4 {{ 'text-danger' if cheat else 'text-success' }}">
+<hr class="my-4">
+
+<h3 class="text-center {{ 'text-danger' if cheat else 'text-success' }}">
 {{ etat_global }}
-</h2>
+</h3>
 
 <div class="d-flex justify-content-center mb-4">
-<a class="btn btn-success btn-lg" href="{{ download }}">Télécharger CSV</a>
+<a class="btn btn-success" href="{{ download }}">Télécharger CSV</a>
 </div>
 
-<div class="table-responsive mb-5">
+<div class="table-responsive">
 {{ table|safe }}
 </div>
 
@@ -120,7 +82,7 @@ placeholder="Température ambiante (°C)" required>
 </html>
 """
 
-# ================= CSV FAST =================
+# ================= LECTURE CSV RAPIDE =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
@@ -128,69 +90,53 @@ def load_link_csv(file):
         header=None,
         sep=",",
         engine="python",
-        on_bad_lines="skip",
-        nrows=CFG["max_rows"]
+        on_bad_lines="skip"
     )
 
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
+
     df.columns = header
+    df = df.reset_index(drop=True)
 
-    df = df.loc[:, df.columns.notna()]
+    return df
 
-    return df.reset_index(drop=True)
 
-# ================= ANALYSE HRL =================
-def analyze_dataframe(df, ambient):
+# ================= ANALYSE ULTRA RAPIDE =================
+def analyze_dataframe(df):
 
     df = df.copy()
 
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
+    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
     df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
-    df["LambdaRaw"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
-    df["ECT"] = pd.to_numeric(df.get("ECT"), errors="coerce")
 
-    df = df.dropna(subset=["Time","TPS","Fuel","LambdaRaw","ECT"])
+    df = df.dropna(subset=["Time","TPS","AFR","Fuel"])
 
-    df = df.sort_values("Time")
+    df["Lambda"] = df["AFR"] / 14.7
 
-    df["dt"] = df["Time"].diff().fillna(0)
-    df = df[df["dt"] >= 0]
+    # Conditions individuelles
+    df["OUT_FUEL"] = ~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"])
+    df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
+    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
 
-    # AFR -> Lambda conversion automatique
-    df["Lambda"] = df["LambdaRaw"]/14.7
-
-    # règles HRL
-    df["OUT_FUEL"] = df["Fuel"] < CFG["fuel_min"]
-    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"],CFG["lambda_max"])
-    df["OUT_TPS"] = df["TPS"] < CFG["tps_min"]
-    df["OUT_TEMP"] = df["ECT"] > (ambient + CFG["temp_offset"])
-
+    # IMPORTANT : seulement si les 3 sont hors norme
     df["OUT"] = (
-        df["OUT_FUEL"] |
-        df["OUT_LAMBDA"] |
-        df["OUT_TPS"] |
-        df["OUT_TEMP"]
+        df["OUT_FUEL"] &
+        df["OUT_TPS"] &
+        df["OUT_LAMBDA"]
     )
 
-    cumul = 0
-    cheat = False
-    cheat_time = None
+    # délai
+    df["dt"] = df["Time"].diff().fillna(0)
 
-    for t,out,dt in zip(df["Time"],df["OUT"],df["dt"]):
+    df["cum_out"] = (df["OUT"] * df["dt"]).cumsum()
 
-        if out:
-            cumul += dt
+    cheat_detected = df["cum_out"].max() >= CFG["cheat_delay"]
 
-            if cumul >= CFG["cheat_delay"]:
-                cheat = True
-                cheat_time = t
-                break
-        else:
-            cumul = 0
+    return df, cheat_detected
 
-    return df, cheat, cheat_time
 
 # ================= ROUTES =================
 @app.route("/")
@@ -198,47 +144,44 @@ def index():
     return render_template_string(
         HTML,
         table=None,
-        download=None,
+        cheat=False,
         etat_global="",
-        cheat=False
+        download=None
     )
+
 
 @app.route("/upload", methods=["POST"])
 def upload():
 
-    try:
+    file = request.files["file"]
 
-        file = request.files["file"]
-        location = request.form["location"]
-        ambient = float(request.form["ambient_temp"].replace(",", "."))
+    df = load_link_csv(file)
 
-        df = load_link_csv(file)
-        df, cheat, cheat_time = analyze_dataframe(df, ambient)
+    df, cheat = analyze_dataframe(df)
 
-        if cheat:
-            etat = "Datalog NOT compliant with rules"
-        else:
-            etat = f"PASS | {location}"
+    if cheat:
+        etat = "Datalog NOT compliant with rules"
+    else:
+        etat = "PASS – Datalog conforme HRL"
 
-        fname = f"result_{datetime.now().timestamp()}.csv"
-        path = os.path.join(UPLOAD_DIR, fname)
-        df.to_csv(path, index=False)
+    fname = f"result_{datetime.now().timestamp()}.csv"
+    path = os.path.join(UPLOAD_DIR, fname)
 
-        table = df.head(120).to_html(
-            classes="table table-dark table-striped",
-            index=False
-        )
+    df.to_csv(path, index=False)
 
-        return render_template_string(
-            HTML,
-            table=table,
-            download=url_for("download", fname=fname),
-            etat_global=etat,
-            cheat=cheat
-        )
+    table = df.head(120).to_html(
+        classes="table table-dark table-striped",
+        index=False
+    )
 
-    except Exception as e:
-        return f"Erreur analyse : {e}"
+    return render_template_string(
+        HTML,
+        table=table,
+        cheat=cheat,
+        etat_global=etat,
+        download=url_for("download", fname=fname)
+    )
+
 
 @app.route("/download")
 def download():
@@ -247,7 +190,8 @@ def download():
         as_attachment=True
     )
 
-# ================= RENDER =================
+
+# ================= RUN =================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

@@ -7,21 +7,16 @@ app = Flask(__name__)
 
 # ================= CONFIG HRL =================
 CFG = {
+    "tps_full_load": 85,
 
-    # Pleine charge moteur
-    "tps_min": 90,
-    "tps_max": 105,
+    # règles HRL réelles terrain
+    "fuel_min": 50,
+    "fuel_max": 60,
 
-    # Lambda course sécuritaire
-    "lambda_min": 0.78,
-    "lambda_max": 0.95,
+    "lambda_min": 0.72,
+    "lambda_max": 1.05,
 
-    # Fuel pression réelle terrain HRL
-    "fuel_min": 52,
-    "fuel_max": 56,
-
-    # délai anti faux positif
-    "cheat_delay": 0.7
+    "cheat_delay": 0.5
 }
 
 UPLOAD_DIR = "/tmp"
@@ -50,7 +45,7 @@ HTML = """
   </div>
 
   <div class="col-md-4">
-    <input class="form-control" name="ambient_temp" placeholder="Température ambiante (°C)" required>
+    <input class="form-control" name="ambient_temp" placeholder="Température ambiante °C" required>
   </div>
 </div>
 
@@ -60,20 +55,17 @@ HTML = """
 </form>
 
 {% if table %}
-
-<hr class="my-4">
+<hr>
 
 <h3 class="text-center {{ 'text-danger' if cheat else 'text-success' }}">
-{{ etat_global }}
+{{ etat }}
 </h3>
-
-<div class="d-flex justify-content-center mb-4">
-<a class="btn btn-success" href="{{ download }}">Télécharger CSV</a>
-</div>
 
 <div class="table-responsive">
 {{ table|safe }}
 </div>
+
+<a class="btn btn-success mt-3" href="{{ download }}">Télécharger CSV</a>
 
 {% endif %}
 
@@ -82,14 +74,14 @@ HTML = """
 </html>
 """
 
-# ================= LECTURE CSV RAPIDE =================
+# ================= CSV ROBUSTE =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
         file,
         header=None,
-        sep=",",
         engine="python",
+        sep=",",
         on_bad_lines="skip"
     )
 
@@ -102,7 +94,7 @@ def load_link_csv(file):
     return df
 
 
-# ================= ANALYSE ULTRA RAPIDE =================
+# ================= ANALYSE HRL =================
 def analyze_dataframe(df):
 
     df = df.copy()
@@ -116,24 +108,20 @@ def analyze_dataframe(df):
 
     df["Lambda"] = df["AFR"] / 14.7
 
-    # Conditions individuelles
-    df["OUT_FUEL"] = ~df["Fuel"].between(CFG["fuel_min"], CFG["fuel_max"])
-    df["OUT_TPS"] = ~df["TPS"].between(CFG["tps_min"], CFG["tps_max"])
-    df["OUT_LAMBDA"] = ~df["Lambda"].between(CFG["lambda_min"], CFG["lambda_max"])
+    # Analyse seulement pleine charge
+    df = df[df["TPS"] > CFG["tps_full_load"]]
 
-    # IMPORTANT : seulement si les 3 sont hors norme
-    df["OUT"] = (
-        df["OUT_FUEL"] &
-        df["OUT_TPS"] &
-        df["OUT_LAMBDA"]
-    )
+    if len(df) == 0:
+        return df, False
 
-    # délai
     df["dt"] = df["Time"].diff().fillna(0)
 
-    df["cum_out"] = (df["OUT"] * df["dt"]).cumsum()
+    # FAIL seulement fuel illégal
+    df["CHEAT"] = df["Fuel"] < CFG["fuel_min"]
 
-    cheat_detected = df["cum_out"].max() >= CFG["cheat_delay"]
+    df["cum"] = (df["CHEAT"] * df["dt"]).cumsum()
+
+    cheat_detected = df["cum"].max() >= CFG["cheat_delay"]
 
     return df, cheat_detected
 
@@ -145,7 +133,7 @@ def index():
         HTML,
         table=None,
         cheat=False,
-        etat_global="",
+        etat="",
         download=None
     )
 
@@ -178,7 +166,7 @@ def upload():
         HTML,
         table=table,
         cheat=cheat,
-        etat_global=etat,
+        etat=etat,
         download=url_for("download", fname=fname)
     )
 
@@ -191,7 +179,6 @@ def download():
     )
 
 
-# ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

@@ -7,15 +7,9 @@ app = Flask(__name__)
 
 # ================= CONFIG HRL =================
 CFG = {
-    "tps_full_load": 85,
-
-    # règles HRL réelles terrain
+    "tps_full_load": 90,
+    "rpm_full_load": 6000,
     "fuel_min": 50,
-    "fuel_max": 60,
-
-    "lambda_min": 0.72,
-    "lambda_max": 1.05,
-
     "cheat_delay": 0.5
 }
 
@@ -30,10 +24,38 @@ HTML = """
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+body {
+    background-color: #111;
+}
+
+.logo-top {
+    max-height: 90px;
+    width: auto;
+}
+
+.logo-hrl {
+    max-height: 70px;
+    width: auto;
+}
+
+.footer-img {
+    max-height: 60px;
+    width: auto;
+}
+</style>
+
 </head>
 
-<body class="p-4 bg-dark text-light">
+<body class="p-4 text-light">
+
 <div class="container">
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <img src="{{ url_for('static', filename='logo.png') }}" class="logo-top">
+    <img src="{{ url_for('static', filename='hrl.png') }}" class="logo-hrl">
+</div>
 
 <h2 class="text-center mb-4">Boat Data Analyzer</h2>
 
@@ -61,6 +83,10 @@ HTML = """
 {{ etat }}
 </h3>
 
+<div class="text-center mb-3">
+Session : {{ session_info }}
+</div>
+
 <div class="table-responsive">
 {{ table|safe }}
 </div>
@@ -69,19 +95,23 @@ HTML = """
 
 {% endif %}
 
+<div class="text-center mt-5">
+    <img src="{{ url_for('static', filename='logo.png') }}" class="footer-img">
+</div>
+
 </div>
 </body>
 </html>
 """
 
-# ================= CSV ROBUSTE =================
+# ================= LECTURE CSV =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
         file,
         header=None,
-        engine="python",
         sep=",",
+        engine="python",
         on_bad_lines="skip"
     )
 
@@ -101,27 +131,34 @@ def analyze_dataframe(df):
 
     df["Time"] = pd.to_numeric(df.get("Section Time"), errors="coerce")
     df["TPS"] = pd.to_numeric(df.get("TPS (Main)"), errors="coerce")
-    df["AFR"] = pd.to_numeric(df.get("Lambda 1"), errors="coerce")
+    df["RPM"] = pd.to_numeric(df.get("RPM"), errors="coerce")
     df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
 
-    df = df.dropna(subset=["Time","TPS","AFR","Fuel"])
-
-    df["Lambda"] = df["AFR"] / 14.7
-
-    # Analyse seulement pleine charge
-    df = df[df["TPS"] > CFG["tps_full_load"]]
-
-    if len(df) == 0:
-        return df, False
+    df = df.dropna(subset=["Time","TPS","RPM","Fuel"])
 
     df["dt"] = df["Time"].diff().fillna(0)
 
-    # FAIL seulement fuel illégal
-    df["CHEAT"] = df["Fuel"] < CFG["fuel_min"]
+    df["FULL_LOAD"] = (
+        (df["TPS"] > CFG["tps_full_load"]) &
+        (df["RPM"] > CFG["rpm_full_load"])
+    )
 
-    df["cum"] = (df["CHEAT"] * df["dt"]).cumsum()
+    df["ILLEGAL"] = (
+        df["FULL_LOAD"] &
+        (df["Fuel"] < CFG["fuel_min"])
+    )
 
-    cheat_detected = df["cum"].max() >= CFG["cheat_delay"]
+    max_streak = 0
+    current_streak = 0
+
+    for illegal, dt in zip(df["ILLEGAL"], df["dt"]):
+        if illegal:
+            current_streak += dt
+            max_streak = max(max_streak, current_streak)
+        else:
+            current_streak = 0
+
+    cheat_detected = max_streak >= CFG["cheat_delay"]
 
     return df, cheat_detected
 
@@ -134,7 +171,8 @@ def index():
         table=None,
         cheat=False,
         etat="",
-        download=None
+        download=None,
+        session_info=""
     )
 
 
@@ -143,14 +181,18 @@ def upload():
 
     file = request.files["file"]
 
-    df = load_link_csv(file)
+    location = request.form["location"]
+    temp = request.form["ambient_temp"]
 
+    df = load_link_csv(file)
     df, cheat = analyze_dataframe(df)
 
     if cheat:
         etat = "Datalog NOT compliant with rules"
     else:
         etat = "PASS – Datalog conforme HRL"
+
+    session_info = f"Emplacement: {location} | Température: {temp}°C"
 
     fname = f"result_{datetime.now().timestamp()}.csv"
     path = os.path.join(UPLOAD_DIR, fname)
@@ -167,7 +209,8 @@ def upload():
         table=table,
         cheat=cheat,
         etat=etat,
-        download=url_for("download", fname=fname)
+        download=url_for("download", fname=fname),
+        session_info=session_info
     )
 
 

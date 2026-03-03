@@ -5,7 +5,6 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# ================= CONFIG HRL =================
 CFG = {
     "tps_full_load": 90,
     "rpm_full_load": 6000,
@@ -16,75 +15,50 @@ CFG = {
 UPLOAD_DIR = "/tmp"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ================= HTML =================
 HTML = """
 <!doctype html>
-<html lang="fr">
+<html>
 <head>
 <meta charset="utf-8">
 <title>Boat Data Analyzer</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-
 <style>
-body {
-    background-color: #111;
-}
-
-.logo-top {
-    max-height: 90px;
-    width: auto;
-}
-
-.logo-hrl {
-    max-height: 70px;
-    width: auto;
-}
-
-.footer-img {
-    max-height: 60px;
-    width: auto;
-}
+.logo { max-height:80px; width:auto; }
 </style>
-
 </head>
-
-<body class="p-4 text-light">
+<body class="bg-dark text-light p-4">
 
 <div class="container">
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <img src="{{ url_for('static', filename='logo.png') }}" class="logo-top">
-    <img src="{{ url_for('static', filename='hrl.png') }}" class="logo-hrl">
+<div class="d-flex justify-content-between mb-4">
+<img src="{{ url_for('static', filename='logo.png') }}" class="logo">
+<img src="{{ url_for('static', filename='hrl.png') }}" class="logo">
 </div>
 
-<h2 class="text-center mb-4">Boat Data Analyzer</h2>
+<h3 class="text-center mb-4">Boat Data Analyzer</h3>
 
 <form method="post" action="/upload" enctype="multipart/form-data">
-
 <div class="row mb-3">
-  <div class="col-md-4">
-    <input class="form-control" name="location" placeholder="Emplacement" required>
-  </div>
-
-  <div class="col-md-4">
-    <input class="form-control" name="ambient_temp" placeholder="Température ambiante °C" required>
-  </div>
+<div class="col">
+<input class="form-control" name="location" placeholder="Emplacement" required>
+</div>
+<div class="col">
+<input class="form-control" name="ambient_temp" placeholder="Température °C" required>
+</div>
 </div>
 
 <input class="form-control mb-3" type="file" name="file" required>
 <button class="btn btn-primary">Analyser</button>
-
 </form>
 
 {% if table %}
 <hr>
-
-<h3 class="text-center {{ 'text-danger' if cheat else 'text-success' }}">
+<h4 class="text-center {{ 'text-danger' if cheat else 'text-success' }}">
 {{ etat }}
-</h3>
+</h4>
 
 <div class="text-center mb-3">
-Session : {{ session_info }}
+{{ session_info }}
 </div>
 
 <div class="table-responsive">
@@ -92,39 +66,33 @@ Session : {{ session_info }}
 </div>
 
 <a class="btn btn-success mt-3" href="{{ download }}">Télécharger CSV</a>
-
 {% endif %}
-
-<div class="text-center mt-5">
-    <img src="{{ url_for('static', filename='logo.png') }}" class="footer-img">
-</div>
 
 </div>
 </body>
 </html>
 """
 
-# ================= LECTURE CSV =================
+# ================= LECTURE RAPIDE =================
 def load_link_csv(file):
 
     raw = pd.read_csv(
         file,
         header=None,
         sep=",",
-        engine="python",
-        on_bad_lines="skip"
+        engine="c",   # IMPORTANT plus rapide que python
+        low_memory=False
     )
 
     header = raw.iloc[19]
     df = raw.iloc[22:].copy()
-
     df.columns = header
-    df = df.reset_index(drop=True)
+    df.reset_index(drop=True, inplace=True)
 
     return df
 
 
-# ================= ANALYSE HRL =================
+# ================= ANALYSE ULTRA RAPIDE =================
 def analyze_dataframe(df):
 
     df = df.copy()
@@ -134,31 +102,25 @@ def analyze_dataframe(df):
     df["RPM"] = pd.to_numeric(df.get("RPM"), errors="coerce")
     df["Fuel"] = pd.to_numeric(df.get("Fuel Pressure"), errors="coerce")
 
-    df = df.dropna(subset=["Time","TPS","RPM","Fuel"])
+    df.dropna(subset=["Time","TPS","RPM","Fuel"], inplace=True)
 
     df["dt"] = df["Time"].diff().fillna(0)
 
-    df["FULL_LOAD"] = (
+    full_load = (
         (df["TPS"] > CFG["tps_full_load"]) &
         (df["RPM"] > CFG["rpm_full_load"])
     )
 
-    df["ILLEGAL"] = (
-        df["FULL_LOAD"] &
-        (df["Fuel"] < CFG["fuel_min"])
-    )
+    illegal = full_load & (df["Fuel"] < CFG["fuel_min"])
 
-    max_streak = 0
-    current_streak = 0
+    # 🔥 streak vectorisé (pas de boucle lente)
+    streak_time = (illegal * df["dt"])
 
-    for illegal, dt in zip(df["ILLEGAL"], df["dt"]):
-        if illegal:
-            current_streak += dt
-            max_streak = max(max_streak, current_streak)
-        else:
-            current_streak = 0
+    # regroupe par segments continus
+    group = (illegal != illegal.shift()).cumsum()
+    streak_sum = streak_time.groupby(group).sum()
 
-    cheat_detected = max_streak >= CFG["cheat_delay"]
+    cheat_detected = streak_sum.max() >= CFG["cheat_delay"]
 
     return df, cheat_detected
 
@@ -187,19 +149,16 @@ def upload():
     df = load_link_csv(file)
     df, cheat = analyze_dataframe(df)
 
-    if cheat:
-        etat = "Datalog NOT compliant with rules"
-    else:
-        etat = "PASS – Datalog conforme HRL"
+    etat = "Datalog NOT compliant with rules" if cheat else "PASS – Datalog conforme HRL"
 
     session_info = f"Emplacement: {location} | Température: {temp}°C"
 
     fname = f"result_{datetime.now().timestamp()}.csv"
     path = os.path.join(UPLOAD_DIR, fname)
-
     df.to_csv(path, index=False)
 
-    table = df.head(120).to_html(
+    # ⚡ IMPORTANT : on limite l'affichage
+    table = df.head(80).to_html(
         classes="table table-dark table-striped",
         index=False
     )

@@ -32,7 +32,7 @@ HTML = """
 
 <div class="d-flex justify-content-between mb-4">
 <img src="{{ url_for('static', filename='logo.png') }}" class="logo">
-<img src="{{ url_for('static', filename='hrl.png') }}" class="logo">
+<img src="{{ url_for('static', filename='image_copy.png') }}" class="logo">
 </div>
 
 <h3 class="text-center mb-4">Boat Data Analyzer</h3>

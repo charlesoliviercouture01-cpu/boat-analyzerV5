@@ -31,7 +31,7 @@ HTML = """
 <div class="container">
 
 <div class="d-flex justify-content-between mb-4">
-<img src="{{ url_for('static', filename='logo.png') }}" class="logo">
+<img src="{{ url_for('static', filename='p_logo_zoom.png') }}" class="logo">
 <img src="{{ url_for('static', filename='image_copy.png') }}" class="logo">
 </div>
 

@@ -18,7 +18,7 @@ HTML = """
 
 <style>
 .logo{
-max-height:80px;
+max-height:70px;
 object-fit:contain;
 margin:5px;
 }
@@ -39,7 +39,6 @@ margin:5px;
 <img src="{{ url_for('static', filename='image_copy.png') }}" class="logo">
 
 </div>
-
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
@@ -91,7 +90,7 @@ margin:5px;
 </html>
 """
 
-# ===== LECTURE CSV =====
+# ===== LECTURE CSV RAPIDE =====
 
 def load_link_csv(file):
 
@@ -99,8 +98,8 @@ def load_link_csv(file):
         file,
         header=None,
         sep=",",
-        engine="python",
-        on_bad_lines="skip"
+        engine="c",
+        low_memory=False
     )
 
     header = raw.iloc[19]
@@ -111,7 +110,6 @@ def load_link_csv(file):
 
     df.reset_index(drop=True, inplace=True)
 
-    # EXTRACTION DES VRAIES VALEURS
     ecu = ""
     date = ""
     heure = ""
@@ -128,7 +126,7 @@ def load_link_csv(file):
     return df, ecu, date, heure
 
 
-# ===== ANALYSE =====
+# ===== ANALYSE RAPIDE =====
 
 def analyze_dataframe(df):
 
@@ -143,30 +141,18 @@ def analyze_dataframe(df):
 
     df["dt"] = df["Time"].diff().fillna(0)
 
-    full_load = (
-        (df["TPS"] > 90) &
-        (df["RPM"] > 6000)
-    )
+    full_load = (df["TPS"] > 90) & (df["RPM"] > 6000)
 
     illegal = full_load & (df["Fuel"] < 50)
 
-    max_duration = 0
-    current = 0
+    duration = (illegal * df["dt"]).cumsum()
 
-    for i in range(len(df)):
-
-        if illegal.iloc[i]:
-            current += df["dt"].iloc[i]
-            max_duration = max(max_duration, current)
-        else:
-            current = 0
-
-    cheat = max_duration >= 0.5
+    cheat = duration.max() >= 0.5
 
     return df, cheat
 
 
-# ===== PAGE ACCUEIL =====
+# ===== PAGE =====
 
 @app.route("/")
 def index():
@@ -183,7 +169,7 @@ def index():
     )
 
 
-# ===== ANALYSE =====
+# ===== UPLOAD =====
 
 @app.route("/upload", methods=["POST"])
 def upload():

@@ -17,12 +17,13 @@ HTML = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
 <style>
-.logo {
+.logo{
 max-height:80px;
 object-fit:contain;
 margin:5px;
 }
 </style>
+
 </head>
 
 <body class="bg-dark text-light p-4">
@@ -31,13 +32,14 @@ margin:5px;
 
 <div class="d-flex justify-content-between align-items-center mb-4">
 
-<img src="{{ url_for('static', filename='p_logo_zoom.png') }}" class="logo">
+<img src="{{ url_for('static', filename='logo1.png') }}" class="logo">
 
 <h3 class="text-center flex-grow-1">Boat Data Analyzer</h3>
 
-<img src="{{ url_for('static', filename='image_copy.png') }}" class="logo">
+<img src="{{ url_for('static', filename='logo2.png') }}" class="logo">
 
 </div>
+
 
 <form method="post" action="/upload" enctype="multipart/form-data">
 
@@ -101,23 +103,6 @@ def load_link_csv(file):
         on_bad_lines="skip"
     )
 
-    header_text = raw.head(20).astype(str)
-
-    ecu = ""
-    date = ""
-    heure = ""
-
-    for row in header_text[0]:
-
-        if "ECU" in row or "Serial" in row:
-            ecu = row
-
-        if "Date" in row:
-            date = row
-
-        if "Time" in row:
-            heure = row
-
     header = raw.iloc[19]
 
     df = raw.iloc[22:].copy()
@@ -126,10 +111,24 @@ def load_link_csv(file):
 
     df.reset_index(drop=True, inplace=True)
 
+    # EXTRACTION DES VRAIES VALEURS
+    ecu = ""
+    date = ""
+    heure = ""
+
+    if "Serial Number" in df.columns:
+        ecu = str(df["Serial Number"].iloc[0])
+
+    if "Log Date" in df.columns:
+        date = str(df["Log Date"].iloc[0])
+
+    if "Section Time" in df.columns:
+        heure = str(df["Section Time"].iloc[0])
+
     return df, ecu, date, heure
 
 
-# ===== ANALYSE CORRIGÉE =====
+# ===== ANALYSE =====
 
 def analyze_dataframe(df):
 
@@ -184,7 +183,7 @@ def index():
     )
 
 
-# ===== UPLOAD =====
+# ===== ANALYSE =====
 
 @app.route("/upload", methods=["POST"])
 def upload():

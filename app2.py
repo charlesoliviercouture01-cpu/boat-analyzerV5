@@ -32,11 +32,11 @@ margin:5px;
 
 <div class="d-flex justify-content-between align-items-center mb-4">
 
-<img src="{{ url_for('static', filename='logo1.png') }}" class="logo">
+<img src="{{ url_for('static', filename='p_logo_zoom.png') }}" class="logo">
 
 <h3 class="text-center flex-grow-1">Boat Data Analyzer</h3>
 
-<img src="{{ url_for('static', filename='logo2.png') }}" class="logo">
+<img src="{{ url_for('static', filename='image_copy.png') }}" class="logo">
 
 </div>
 
